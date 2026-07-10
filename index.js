@@ -29,13 +29,15 @@ for (const key of REQUIRED_ENV) {
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID || '';
+const TIME_ZONE = process.env.TIME_ZONE || 'Europe/Warsaw';
+const MAX_MESSAGES = Math.max(100, Number(process.env.MAX_MESSAGES || 25000));
 
 const DROP_CHANNELS = [
   {
     key: 'pawel',
     label: 'Dropy Paweł',
     id: process.env.PAWEL_DROP_CHANNEL_ID || '1515437409653756005',
-    emoji: '🟢',
+    emoji: '🟠',
   },
   {
     key: 'ryzen',
@@ -43,6 +45,23 @@ const DROP_CHANNELS = [
     id: process.env.RYZEN_DROP_CHANNEL_ID || '1524841513606189178',
     emoji: '🔵',
   },
+];
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+});
+
+const commands = [
+  new SlashCommandBuilder()
+    .setName('drop')
+    .setDescription('Sprawdza dropy petów z wybranego okresu i konta'),
+  new SlashCommandBuilder()
+    .setName('pet')
+    .setDescription('Pokazuje historię dropów konkretnego peta'),
 ];
 
 function getChannelSelection(channelKey) {
@@ -61,20 +80,29 @@ function getChannelSelection(channelKey) {
     ids: [channel.id],
   };
 }
-const TIME_ZONE = process.env.TIME_ZONE || 'Europe/Warsaw';
-const MAX_MESSAGES = Math.max(100, Number(process.env.MAX_MESSAGES || 25000));
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-  ],
-});
+function getChannelLabelById(channelId) {
+  return DROP_CHANNELS.find((channel) => channel.id === channelId)?.label || channelId;
+}
 
-const command = new SlashCommandBuilder()
-  .setName('drop')
-  .setDescription('Sprawdza dropy petów z wybranego okresu i konta');
+function buildChannelSelect(customId, placeholder = 'Wybierz kanał z dropami') {
+  return new StringSelectMenuBuilder()
+    .setCustomId(customId)
+    .setPlaceholder(placeholder)
+    .addOptions(
+      ...DROP_CHANNELS.map((channel) =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(channel.label)
+          .setValue(channel.key)
+          .setEmoji(channel.emoji),
+      ),
+      new StringSelectMenuOptionBuilder()
+        .setLabel('Oba kanały')
+        .setDescription('Łączy dropy Pawła i Ryzena')
+        .setValue('all')
+        .setEmoji('📡'),
+    );
+}
 
 function typeLabel(type) {
   return {
@@ -131,37 +159,51 @@ function normalizeItemName(value) {
     .replace(/\s+/g, ' ');
 }
 
-function buildLatestRapMap(drops, wantedItemKeys) {
-  const latestRaps = new Map();
-
-  for (const drop of drops) {
-    if (!drop || drop.rap <= 0n) continue;
-
-    const itemKey = normalizeItemName(drop.item);
-    if (!wantedItemKeys.has(itemKey)) continue;
-
-    const current = latestRaps.get(itemKey);
-    if (!current || drop.createdAt > current.createdAt) {
-      latestRaps.set(itemKey, drop);
-    }
-  }
-
-  return latestRaps;
+function normalizeAccount(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
+    .trim()
+    .toLowerCase();
 }
 
-function mergeLatestRapMaps(...maps) {
-  const merged = new Map();
+// Hierarchia wariantu:
+// Shiny Rainbow > Shiny Golden > Shiny > Normal
+function getVariantRank(itemName) {
+  const value = normalizeItemName(itemName);
+  const isShiny = value.includes('shiny');
+  const isRainbow = value.includes('rainbow');
+  const isGolden = value.includes('golden');
 
-  for (const map of maps) {
-    for (const [itemKey, candidate] of map) {
-      const current = merged.get(itemKey);
-      if (!current || candidate.createdAt > current.createdAt) {
-        merged.set(itemKey, candidate);
-      }
-    }
-  }
+  if (isShiny && isRainbow) return 4;
+  if (isShiny && isGolden) return 3;
+  if (isShiny) return 2;
+  return 1;
+}
 
-  return merged;
+// Hierarchia typu:
+// Gargantuan > Titanic > Huge
+function getTypeRank(typeOrItem) {
+  const type = ['gargantuan', 'titanic', 'huge'].includes(typeOrItem)
+    ? typeOrItem
+    : detectPetType(typeOrItem);
+
+  return {
+    gargantuan: 3,
+    titanic: 2,
+    huge: 1,
+  }[type] || 0;
+}
+
+function compareByHierarchy(a, b) {
+  const variantDifference = getVariantRank(b.item) - getVariantRank(a.item);
+  if (variantDifference !== 0) return variantDifference;
+
+  const typeDifference = getTypeRank(b.type || b.item) - getTypeRank(a.type || a.item);
+  if (typeDifference !== 0) return typeDifference;
+
+  if (a.rap !== b.rap) return a.rap > b.rap ? -1 : 1;
+  return (b.createdAt || 0) - (a.createdAt || 0);
 }
 
 function parseDropFromEmbed(embed, message) {
@@ -213,8 +255,16 @@ function parseLocalDateTime(dateRaw, timeRaw) {
   return null;
 }
 
+function parseOptionalDate(dateRaw, endOfDay = false) {
+  const value = String(dateRaw || '').trim();
+  if (!value) return null;
+
+  const parsed = parseLocalDateTime(value, endOfDay ? '23:59' : '00:00');
+  return parsed;
+}
+
 function formatBigInt(value) {
-  return value.toLocaleString('pl-PL');
+  return BigInt(value || 0).toLocaleString('pl-PL');
 }
 
 function formatDateTime(timestamp) {
@@ -224,6 +274,15 @@ function formatDateTime(timestamp) {
 function truncate(value, max = 1024) {
   const text = String(value || '');
   return text.length <= max ? text : `${text.slice(0, max - 3)}...`;
+}
+
+function isAllAccounts(value) {
+  return ['wszystkie', 'all', '*', ''].includes(normalizeAccount(value));
+}
+
+function accountMatches(dropAccount, requestedAccount) {
+  return isAllAccounts(requestedAccount)
+    || normalizeAccount(dropAccount) === normalizeAccount(requestedAccount);
 }
 
 async function fetchDrops(channel, fromMillis, toMillis) {
@@ -288,6 +347,38 @@ async function fetchDropsFromChannels(channelIds, fromMillis, toMillis) {
   };
 }
 
+function buildLatestRapMap(drops, wantedItemKeys) {
+  const latestRaps = new Map();
+
+  for (const drop of drops) {
+    if (!drop || drop.rap <= 0n) continue;
+
+    const itemKey = normalizeItemName(drop.item);
+    if (!wantedItemKeys.has(itemKey)) continue;
+
+    const current = latestRaps.get(itemKey);
+    if (!current || drop.createdAt > current.createdAt) {
+      latestRaps.set(itemKey, drop);
+    }
+  }
+
+  return latestRaps;
+}
+
+function mergeLatestRapMaps(...maps) {
+  const merged = new Map();
+
+  for (const map of maps) {
+    for (const [itemKey, candidate] of map) {
+      const current = merged.get(itemKey);
+      if (!current || candidate.createdAt > current.createdAt) {
+        merged.set(itemKey, candidate);
+      }
+    }
+  }
+
+  return merged;
+}
 
 async function fetchLatestRaps(channel, wantedItemKeys) {
   const latestRaps = new Map();
@@ -366,6 +457,7 @@ async function fetchLatestRapsFromChannels(channelIds, wantedItemKeys) {
 function applyLatestRaps(drops, latestRaps) {
   return drops.map((drop) => {
     const latest = latestRaps.get(normalizeItemName(drop.item));
+
     if (!latest) {
       return {
         ...drop,
@@ -385,24 +477,72 @@ function applyLatestRaps(drops, latestRaps) {
   });
 }
 
-function buildResultEmbed({ drops, type, account, channelLabel, from, to, scanned, hitLimit, channelsScanned, pricingFound, pricingWanted }) {
+async function repriceDrops(drops, allFetchedDrops, channelIds) {
+  const wantedItemKeys = new Set(drops.map((drop) => normalizeItemName(drop.item)));
+  const latestRapsInSelectedRange = buildLatestRapMap(allFetchedDrops, wantedItemKeys);
+  const latestRapResult = await fetchLatestRapsFromChannels(channelIds, wantedItemKeys);
+  const finalLatestRaps = mergeLatestRapMaps(
+    latestRapsInSelectedRange,
+    latestRapResult.latestRaps,
+  );
+
+  return {
+    drops: applyLatestRaps(drops, finalLatestRaps),
+    latestRaps: finalLatestRaps,
+    scanned: latestRapResult.scanned,
+    hitLimit: latestRapResult.hitLimit,
+    pricingWanted: wantedItemKeys.size,
+    pricingFound: finalLatestRaps.size,
+  };
+}
+
+function buildResultEmbed({
+  drops,
+  type,
+  account,
+  channelLabel,
+  from,
+  to,
+  scanned,
+  hitLimit,
+  channelsScanned,
+  pricingFound,
+  pricingWanted,
+}) {
   const totalRap = drops.reduce((sum, drop) => sum + drop.rap, 0n);
-  const sorted = [...drops].sort((a, b) => (a.rap === b.rap ? 0 : a.rap > b.rap ? -1 : 1));
+  const sorted = [...drops].sort(compareByHierarchy);
   const repricedCount = drops.filter((drop) => drop.originalRap !== drop.rap).length;
 
   const itemCounts = new Map();
   for (const drop of drops) {
-    const key = drop.item;
-    const current = itemCounts.get(key) || { count: 0, rap: 0n };
+    const key = normalizeItemName(drop.item);
+    const current = itemCounts.get(key) || {
+      item: drop.item,
+      type: drop.type,
+      count: 0,
+      rap: drop.rap,
+      createdAt: drop.createdAt,
+    };
+
     current.count += 1;
-    current.rap += drop.rap;
+    if (drop.createdAt > current.createdAt) {
+      current.item = drop.item;
+      current.type = drop.type;
+      current.rap = drop.rap;
+      current.createdAt = drop.createdAt;
+    }
+
     itemCounts.set(key, current);
   }
 
-  const itemSummary = [...itemCounts.entries()]
-    .sort((a, b) => b[1].count - a[1].count)
-    .slice(0, 15)
-    .map(([name, info]) => `• **${name}** — ${info.count}x`)
+  const itemSummary = [...itemCounts.values()]
+    .sort((a, b) => {
+      const hierarchy = compareByHierarchy(a, b);
+      if (hierarchy !== 0) return hierarchy;
+      return b.count - a.count;
+    })
+    .slice(0, 20)
+    .map((info) => `• **${info.item}** — ${info.count}x`)
     .join('\n') || 'Brak';
 
   const bestDrops = sorted
@@ -412,8 +552,8 @@ function buildResultEmbed({ drops, type, account, channelLabel, from, to, scanne
         ? ` • cena RAP z ${formatDateTime(drop.rapSourceCreatedAt)}`
         : '';
 
-      return `${index + 1}. **${drop.item}**\n` +
-        `   RAP: \`${formatBigInt(drop.rap)}\` • konto: \`${drop.account}\` • drop: ${formatDateTime(drop.createdAt)}${priceDate}`;
+      return `${index + 1}. **${drop.item}**\n`
+        + `   RAP: \`${formatBigInt(drop.rap)}\` • konto: \`${drop.account}\` • drop: ${formatDateTime(drop.createdAt)}${priceDate}`;
     })
     .join('\n') || 'Brak';
 
@@ -421,12 +561,13 @@ function buildResultEmbed({ drops, type, account, channelLabel, from, to, scanne
     .setTitle('📊 Podsumowanie dropów')
     .setColor(0xffa500)
     .setDescription(
-      `**Kanał:** ${channelLabel}\n` +
-      `**Rodzaj:** ${typeLabel(type)}\n` +
-      `**Konto:** \`${account}\`\n` +
-      `**Okres:** ${from.toFormat('dd.MM.yyyy HH:mm')} – ${to.toFormat('dd.MM.yyyy HH:mm')}\n` +
-      `**Wycena RAP:** najnowszy zapisany drop tego samego peta\n` +
-      `**Strefa czasowa:** ${TIME_ZONE}`,
+      `**Kanał:** ${channelLabel}\n`
+      + `**Rodzaj:** ${typeLabel(type)}\n`
+      + `**Konto:** \`${account}\`\n`
+      + `**Okres:** ${from.toFormat('dd.MM.yyyy HH:mm')} – ${to.toFormat('dd.MM.yyyy HH:mm')}\n`
+      + '**Hierarchia:** Shiny Rainbow > Shiny Golden > Shiny > Normal; Gargantuan > Titanic > Huge\n'
+      + '**Wycena RAP:** najnowszy zapisany drop tego samego peta\n'
+      + `**Strefa czasowa:** ${TIME_ZONE}`,
     )
     .addFields(
       { name: '🎁 Liczba dropów', value: `\`${drops.length}\``, inline: true },
@@ -440,8 +581,8 @@ function buildResultEmbed({ drops, type, account, channelLabel, from, to, scanne
     )
     .setFooter({
       text: hitLimit
-        ? `Na co najmniej jednym kanale osiągnięto limit ${MAX_MESSAGES} wiadomości — zwiększ MAX_MESSAGES na Railway.`
-        : 'Drop Tracker',
+        ? `Osiągnięto limit ${MAX_MESSAGES} wiadomości na co najmniej jednym kanale. Zwiększ MAX_MESSAGES na Railway.`
+        : 'DropVault',
     })
     .setTimestamp();
 
@@ -449,48 +590,145 @@ function buildResultEmbed({ drops, type, account, channelLabel, from, to, scanne
   return embed;
 }
 
-async function registerCommand() {
+function buildPetEmbed({
+  drops,
+  query,
+  exactMatch,
+  account,
+  channelLabel,
+  from,
+  to,
+  scanned,
+  hitLimit,
+}) {
+  const sortedByDate = [...drops].sort((a, b) => b.createdAt - a.createdAt);
+  const totalRap = drops.reduce((sum, drop) => sum + drop.rap, 0n);
+  const latestDrop = sortedByDate[0];
+
+  const grouped = new Map();
+  for (const drop of drops) {
+    const key = normalizeItemName(drop.item);
+    const current = grouped.get(key) || {
+      item: drop.item,
+      type: drop.type,
+      count: 0,
+      currentRap: drop.rap,
+      latestDropAt: drop.createdAt,
+      latestPriceAt: drop.rapSourceCreatedAt,
+      thumbnail: drop.thumbnail,
+    };
+
+    current.count += 1;
+    if (drop.createdAt > current.latestDropAt) {
+      current.item = drop.item;
+      current.type = drop.type;
+      current.latestDropAt = drop.createdAt;
+      current.thumbnail = drop.thumbnail || current.thumbnail;
+    }
+    if ((drop.rapSourceCreatedAt || 0) >= (current.latestPriceAt || 0)) {
+      current.currentRap = drop.rap;
+      current.latestPriceAt = drop.rapSourceCreatedAt;
+    }
+
+    grouped.set(key, current);
+  }
+
+  const matchedPets = [...grouped.values()]
+    .sort(compareByHierarchy)
+    .slice(0, 15)
+    .map((pet) => {
+      const priceDate = pet.latestPriceAt ? ` • cena z ${formatDateTime(pet.latestPriceAt)}` : '';
+      return `• **${pet.item}** — ${pet.count}x\n  RAP: \`${formatBigInt(pet.currentRap)}\`${priceDate}`;
+    })
+    .join('\n') || 'Brak';
+
+  const history = sortedByDate
+    .slice(0, 20)
+    .map((drop, index) => {
+      const sourceChannel = getChannelLabelById(drop.channelId);
+      return `${index + 1}. **${drop.item}**\n`
+        + `   ${formatDateTime(drop.createdAt)} • \`${drop.account}\` • ${sourceChannel}`;
+    })
+    .join('\n') || 'Brak';
+
+  const dateLabel = from && to
+    ? `${from.toFormat('dd.MM.yyyy')} – ${to.toFormat('dd.MM.yyyy')}`
+    : 'cała dostępna historia';
+
+  const embed = new EmbedBuilder()
+    .setTitle(`🔎 Historia peta: ${query}`)
+    .setColor(0x5865f2)
+    .setDescription(
+      `**Kanał:** ${channelLabel}\n`
+      + `**Konto:** \`${account}\`\n`
+      + `**Zakres:** ${dateLabel}\n`
+      + `**Dopasowanie:** ${exactMatch ? 'dokładna nazwa' : 'część nazwy'}\n`
+      + '**Aktualny RAP:** z najnowszego zapisanego dropu tego samego peta',
+    )
+    .addFields(
+      { name: '📦 Liczba dropów', value: `\`${drops.length}\``, inline: true },
+      { name: '💎 Suma aktualnego RAP', value: `\`${formatBigInt(totalRap)}\``, inline: true },
+      {
+        name: '🕒 Ostatni drop',
+        value: latestDrop ? formatDateTime(latestDrop.createdAt) : 'Brak',
+        inline: true,
+      },
+      { name: '🐾 Znalezione pety', value: truncate(matchedPets) },
+      { name: '📜 Najnowsza historia', value: truncate(history) },
+    )
+    .setFooter({
+      text: hitLimit
+        ? `Osiągnięto limit ${MAX_MESSAGES} wiadomości. Starsze dropy mogą nie być widoczne.`
+        : `Sprawdzono ${scanned} wiadomości`,
+    })
+    .setTimestamp();
+
+  const thumbnail = latestDrop?.thumbnail || [...grouped.values()].find((pet) => pet.thumbnail)?.thumbnail;
+  if (thumbnail) embed.setThumbnail(thumbnail);
+  return embed;
+}
+
+async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(TOKEN);
+  const body = commands.map((command) => command.toJSON());
+
   if (GUILD_ID) {
-    await rest.post(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: command.toJSON() });
-    console.log(`Zarejestrowano /drop na serwerze ${GUILD_ID}.`);
+    await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body });
+    console.log(`Zarejestrowano /drop i /pet na serwerze ${GUILD_ID}.`);
   } else {
-    await rest.post(Routes.applicationCommands(CLIENT_ID), { body: command.toJSON() });
-    console.log('Zarejestrowano globalną komendę /drop.');
+    await rest.put(Routes.applicationCommands(CLIENT_ID), { body });
+    console.log('Zarejestrowano globalne komendy /drop i /pet.');
   }
 }
 
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Bot zalogowany jako ${readyClient.user.tag}`);
+
   try {
-    await registerCommand();
+    await registerCommands();
   } catch (error) {
-    console.error('Nie udało się zarejestrować komendy /drop:', error);
+    console.error('Nie udało się zarejestrować komend:', error);
   }
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.isChatInputCommand() && interaction.commandName === 'drop') {
-      const channelSelect = new StringSelectMenuBuilder()
-        .setCustomId(`drop_channel:${interaction.user.id}`)
-        .setPlaceholder('Wybierz kanał z dropami')
-        .addOptions(
-          ...DROP_CHANNELS.map((channel) =>
-            new StringSelectMenuOptionBuilder()
-              .setLabel(channel.label)
-              .setValue(channel.key)
-              .setEmoji(channel.emoji),
-          ),
-          new StringSelectMenuOptionBuilder()
-            .setLabel('Oba kanały')
-            .setDescription('Łączy dropy Pawła i Ryzena')
-            .setValue('all')
-            .setEmoji('📡'),
-        );
+      const channelSelect = buildChannelSelect(`drop_channel:${interaction.user.id}`);
 
       await interaction.reply({
         content: 'Najpierw wybierz, z którego kanału bot ma liczyć dropy:',
+        components: [new ActionRowBuilder().addComponents(channelSelect)],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'pet') {
+      const channelSelect = buildChannelSelect(`pet_channel:${interaction.user.id}`);
+
+      await interaction.reply({
+        content: 'Wybierz kanał, na którym bot ma wyszukać historię peta:',
         components: [new ActionRowBuilder().addComponents(channelSelect)],
         flags: MessageFlags.Ephemeral,
       });
@@ -624,6 +862,73 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('pet_channel:')) {
+      const ownerId = interaction.customId.split(':')[1];
+      if (interaction.user.id !== ownerId) {
+        await interaction.reply({
+          content: 'To menu należy do innej osoby.',
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const channelKey = interaction.values[0];
+      const channelSelection = getChannelSelection(channelKey);
+      if (!channelSelection) {
+        await interaction.update({
+          content: '❌ Nie znaleziono wybranego kanału.',
+          components: [],
+        });
+        return;
+      }
+
+      const modal = new ModalBuilder()
+        .setCustomId(`pet_modal:${interaction.user.id}:${channelKey}`)
+        .setTitle(`Wyszukaj peta — ${channelSelection.label}`);
+
+      const petNameInput = new TextInputBuilder()
+        .setCustomId('pet_name')
+        .setLabel('Nazwa peta')
+        .setPlaceholder('np. Titanic Goalie Octopus')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(150);
+
+      const accountInput = new TextInputBuilder()
+        .setCustomId('account')
+        .setLabel('Nick konta lub "wszystkie"')
+        .setStyle(TextInputStyle.Short)
+        .setValue('wszystkie')
+        .setRequired(true)
+        .setMaxLength(100);
+
+      const dateFromInput = new TextInputBuilder()
+        .setCustomId('date_from')
+        .setLabel('Data od — opcjonalnie (DD.MM.RRRR)')
+        .setPlaceholder('Puste = cała historia')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(10);
+
+      const dateToInput = new TextInputBuilder()
+        .setCustomId('date_to')
+        .setLabel('Data do — opcjonalnie (DD.MM.RRRR)')
+        .setPlaceholder('Puste = dzisiaj')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false)
+        .setMaxLength(10);
+
+      modal.addComponents(
+        new ActionRowBuilder().addComponents(petNameInput),
+        new ActionRowBuilder().addComponents(accountInput),
+        new ActionRowBuilder().addComponents(dateFromInput),
+        new ActionRowBuilder().addComponents(dateToInput),
+      );
+
+      await interaction.showModal(modal);
+      return;
+    }
+
     if (interaction.isModalSubmit() && interaction.customId.startsWith('drop_modal:')) {
       const [, ownerId, channelKey, type] = interaction.customId.split(':');
       if (interaction.user.id !== ownerId) {
@@ -668,48 +973,111 @@ client.on(Events.InteractionCreate, async (interaction) => {
         from.toMillis(),
         to.toMillis(),
       );
-      const allAccounts = ['wszystkie', 'all', '*'].includes(accountRaw.toLowerCase());
 
       const filtered = result.drops.filter((drop) => {
         const typeMatches = type === 'all' || drop.type === type;
-        const accountMatches = allAccounts || drop.account.toLowerCase() === accountRaw.toLowerCase();
-        return typeMatches && accountMatches;
+        return typeMatches && accountMatches(drop.account, accountRaw);
       });
 
-      // Dla każdego peta z wyniku szukamy najnowszego dropu w wybranym kanale
-      // (również poza wybranym zakresem dat) i używamy jego RAP do całej wyceny.
-      const wantedItemKeys = new Set(filtered.map((drop) => normalizeItemName(drop.item)));
-
-      // Najpierw budujemy ceny z wiadomości już pobranych dla wybranego okresu.
-      // Dzięki temu późniejszy drop z tego samego zakresu zawsze nadpisze starszy,
-      // nawet jeżeli kanał ma bardzo dużo nowszych wiadomości.
-      const latestRapsInSelectedRange = buildLatestRapMap(result.drops, wantedItemKeys);
-
-      // Następnie sprawdzamy cały najnowszy fragment historii kanału, aby znaleźć
-      // jeszcze nowszą cenę także poza zakresem dat podanym w formularzu.
-      const latestRapResult = await fetchLatestRapsFromChannels(
-        channelSelection.ids,
-        wantedItemKeys,
-      );
-
-      const finalLatestRaps = mergeLatestRapMaps(
-        latestRapsInSelectedRange,
-        latestRapResult.latestRaps,
-      );
-      const repricedDrops = applyLatestRaps(filtered, finalLatestRaps);
-
+      const repriced = await repriceDrops(filtered, result.drops, channelSelection.ids);
       const embed = buildResultEmbed({
-        drops: repricedDrops,
+        drops: repriced.drops,
         type,
-        account: allAccounts ? 'wszystkie' : accountRaw,
+        account: isAllAccounts(accountRaw) ? 'wszystkie' : accountRaw,
         channelLabel: channelSelection.label,
         from,
         to,
-        scanned: result.scanned + latestRapResult.scanned,
-        hitLimit: result.hitLimit || latestRapResult.hitLimit,
+        scanned: result.scanned + repriced.scanned,
+        hitLimit: result.hitLimit || repriced.hitLimit,
         channelsScanned: result.channelsScanned,
-        pricingFound: finalLatestRaps.size,
-        pricingWanted: wantedItemKeys.size,
+        pricingFound: repriced.pricingFound,
+        pricingWanted: repriced.pricingWanted,
+      });
+
+      await interaction.editReply({ embeds: [embed] });
+      return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('pet_modal:')) {
+      const [, ownerId, channelKey] = interaction.customId.split(':');
+      if (interaction.user.id !== ownerId) {
+        await interaction.reply({
+          content: 'Ten formularz należy do innej osoby.',
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const queryRaw = interaction.fields.getTextInputValue('pet_name').trim();
+      const accountRaw = interaction.fields.getTextInputValue('account').trim();
+      const dateFromRaw = interaction.fields.getTextInputValue('date_from').trim();
+      const dateToRaw = interaction.fields.getTextInputValue('date_to').trim();
+
+      const query = normalizeItemName(queryRaw);
+      if (!query) {
+        await interaction.editReply('❌ Wpisz nazwę peta.');
+        return;
+      }
+
+      const from = parseOptionalDate(dateFromRaw, false);
+      const to = parseOptionalDate(dateToRaw, true);
+
+      if (dateFromRaw && !from) {
+        await interaction.editReply('❌ Nieprawidłowa data „od”. Użyj formatu `DD.MM.RRRR`.');
+        return;
+      }
+
+      if (dateToRaw && !to) {
+        await interaction.editReply('❌ Nieprawidłowa data „do”. Użyj formatu `DD.MM.RRRR`.');
+        return;
+      }
+
+      const effectiveFrom = from || DateTime.fromISO('2015-01-01', { zone: TIME_ZONE }).startOf('day');
+      const effectiveTo = to || DateTime.now().setZone(TIME_ZONE).endOf('day');
+
+      if (effectiveTo < effectiveFrom) {
+        await interaction.editReply('❌ Data „do” nie może być wcześniejsza niż data „od”.');
+        return;
+      }
+
+      const channelSelection = getChannelSelection(channelKey);
+      if (!channelSelection) {
+        await interaction.editReply('❌ Nie znaleziono wybranego kanału. Użyj ponownie `/pet`.');
+        return;
+      }
+
+      const result = await fetchDropsFromChannels(
+        channelSelection.ids,
+        effectiveFrom.toMillis(),
+        effectiveTo.toMillis(),
+      );
+
+      const accountFiltered = result.drops.filter((drop) => accountMatches(drop.account, accountRaw));
+      const exactMatches = accountFiltered.filter((drop) => normalizeItemName(drop.item) === query);
+      const partialMatches = accountFiltered.filter((drop) => normalizeItemName(drop.item).includes(query));
+      const matched = exactMatches.length > 0 ? exactMatches : partialMatches;
+      const exactMatch = exactMatches.length > 0;
+
+      if (matched.length === 0) {
+        await interaction.editReply(
+          `❌ Nie znaleziono peta pasującego do \`${queryRaw}\` na **${channelSelection.label}**.`,
+        );
+        return;
+      }
+
+      const repriced = await repriceDrops(matched, result.drops, channelSelection.ids);
+      const embed = buildPetEmbed({
+        drops: repriced.drops,
+        query: queryRaw,
+        exactMatch,
+        account: isAllAccounts(accountRaw) ? 'wszystkie' : accountRaw,
+        channelLabel: channelSelection.label,
+        from: dateFromRaw || dateToRaw ? effectiveFrom : null,
+        to: dateFromRaw || dateToRaw ? effectiveTo : null,
+        scanned: result.scanned + repriced.scanned,
+        hitLimit: result.hitLimit || repriced.hitLimit,
       });
 
       await interaction.editReply({ embeds: [embed] });

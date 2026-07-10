@@ -1,30 +1,43 @@
-# DropVault Bot — Railway
+# DropVault Bot
 
-Bot liczy dropy osobno z kanału Pawła albo Ryzena. Po wpisaniu `/drop` najpierw wybierasz kanał, potem rodzaj peta, konto oraz zakres dat i godzin. Opcja **Oba kanały** jest dostępna tylko wtedy, gdy celowo chcesz połączyć wyniki.
+Discord bot do analizowania dropów Huge, Titanic i Gargantuan z dwóch osobnych kanałów.
 
-## Zmienne Railway
+## Funkcje
 
-Dodaj w zakładce **Variables**:
+- `/drop` — wybór kanału, typu peta, konta oraz zakresu dat i godzin.
+- `/pet` — historia konkretnego peta, liczba dropów, konta, daty i najnowszy RAP.
+- Osobny wybór kanału: Dropy Paweł, Dropy Ryzen albo oba kanały.
+- Najnowszy RAP dla danego peta jest pobierany z jego ostatniego znalezionego dropu.
+- Sortowanie według hierarchii:
+  1. Shiny Rainbow
+  2. Shiny Golden
+  3. Shiny
+  4. Normal
 
-- `TOKEN` — token bota
-- `CLIENT_ID` — Application ID bota
-- `GUILD_ID` — ID serwera Discord
-- `TIME_ZONE=Europe/Warsaw`
-- `MAX_MESSAGES=25000`
+  Następnie według typu:
+  1. Gargantuan
+  2. Titanic
+  3. Huge
 
-Kanały są już wpisane w `index.js`:
+## Railway Variables
 
-- Dropy Paweł: `1515437409653756005`
-- Dropy Ryzen: `1524841513606189178`
+Ustaw w Railway → Variables:
 
-Opcjonalnie możesz nadpisać je zmiennymi:
+```env
+TOKEN=TOKEN_BOTA
+CLIENT_ID=ID_APLIKACJI_BOTA
+GUILD_ID=ID_SERWERA
+TIME_ZONE=Europe/Warsaw
+MAX_MESSAGES=25000
+PAWEL_DROP_CHANNEL_ID=1515437409653756005
+RYZEN_DROP_CHANNEL_ID=1524841513606189178
+```
 
-- `PAWEL_DROP_CHANNEL_ID`
-- `RYZEN_DROP_CHANNEL_ID`
+## Discord Developer Portal
 
-## Uprawnienia Discord
+Włącz `Message Content Intent`.
 
-Włącz `Message Content Intent`. Na obu kanałach bot potrzebuje:
+Bot potrzebuje na obu kanałach:
 
 - View Channel
 - Read Message History
@@ -32,12 +45,11 @@ Włącz `Message Content Intent`. Na obu kanałach bot potrzebuje:
 - Embed Links
 - Use Application Commands
 
-## Railway
+## Uruchomienie
 
-Wgraj zawartość ZIP-a do głównego katalogu repozytorium. Railway wykryje `Dockerfile`. Nie ustawiaj ręcznie komendy `npm ci`.
+```bash
+npm install
+npm start
+```
 
-## Najnowszy RAP dla starszych dropów
-
-Bot wycenia każdy znaleziony drop ceną RAP z **najnowszego zapisanego dropu tego samego peta** na wybranym kanale. Szukanie najnowszej ceny nie jest ograniczone datami wpisanymi w formularzu.
-
-Przykład: jeśli drop z 07.07.2026 miał RAP 4 460 000 000, ale najnowszy zapis tego samego peta z 10.07.2026 ma RAP 4 080 000 000, starszy drop zostanie policzony jako 4 080 000 000.
+Na Railway projekt użyje dołączonego `Dockerfile`.
