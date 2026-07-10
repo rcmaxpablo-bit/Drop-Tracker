@@ -37,7 +37,7 @@ const DROP_CHANNELS = [
     key: 'pawel',
     label: 'Dropy Paweł',
     id: process.env.PAWEL_DROP_CHANNEL_ID || '1515437409653756005',
-    emoji: '🟠',
+    emoji: '🟢',
   },
   {
     key: 'ryzen',
