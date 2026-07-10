@@ -1,37 +1,112 @@
-# DropVault Bot
+# DropVault Bot 2.0
 
-Discord bot do analizowania dropów Huge, Titanic i Gargantuan z dwóch osobnych kanałów.
+Bot Discord do analizowania dropów Huge, Titanic i Gargantuan z dwóch oddzielnych kanałów.
+
+## Kanały i osoby
+
+- 🟢 Dropy Paweł: `1515437409653756005`
+- 🔵 Dropy Ryzen: `1524841513606189178`
+- Ping Paweł: `1265797244074852576`
+- Ping Ryzen: `1330652001075335300`
+
+Wszystkie ID można zmienić przez Railway Variables bez edytowania kodu.
 
 ## Funkcje
 
-- `/drop` — wybór kanału, typu peta, konta oraz zakresu dat i godzin.
-- `/pet` — historia konkretnego peta, liczba dropów, konta, daty i najnowszy RAP.
-- Osobny wybór kanału: Dropy Paweł, Dropy Ryzen albo oba kanały.
-- Najnowszy RAP dla danego peta jest pobierany z jego ostatniego znalezionego dropu.
-- Sortowanie według hierarchii:
-  1. Shiny Rainbow
-  2. Shiny Golden
-  3. Shiny
-  4. Normal
+### `/drop`
 
-  Następnie według typu:
-  1. Gargantuan
-  2. Titanic
-  3. Huge
+- wybór kanału Paweł / Ryzen / oba,
+- wybór Huge / Titanic / Gargantuan / wszystkie,
+- filtr wariantu: Normal, Golden, Rainbow, Shiny, Shiny Golden, Shiny Rainbow,
+- konto wybierane z listy, także gdy kont jest więcej niż 24,
+- zakres dat i godzin,
+- najnowszy RAP tego samego peta,
+- przyciski Poprzednia / Następna,
+- najlepsze dropy sortowane wyłącznie według RAP,
+- podział petów: Gargantuan > Titanic > Huge, potem wariant.
+
+### `/pet`
+
+Przykład:
+
+```text
+/pet nazwa:Titanic Goalie Octopus kanal:Dropy Ryzen konto:wszystkie
+```
+
+- autouzupełnianie nazw petów,
+- autouzupełnianie kont,
+- filtr wariantu,
+- opcjonalny zakres dat,
+- historia na stronach.
+
+### `/petvalue`
+
+Pokazuje:
+
+- pierwszy i najnowszy RAP,
+- zmianę kwotową i procentową,
+- najniższy oraz najwyższy RAP,
+- historię zmian ceny z datami, kontami i kanałami,
+- przyciski Poprzednia / Następna.
+
+### Raport dzienny
+
+Codziennie o `23:59` w strefie `Europe/Warsaw` bot wysyła osobny raport na kanał Pawła i Ryzena:
+
+- liczbę dropów,
+- łączny RAP,
+- najlepszy drop,
+- najlepsze konto,
+- podział Huge / Titanic / Gargantuan,
+- RAP oddzielnie dla każdego konta,
+- RAP oddzielnie dla każdego peta.
+
+### Alerty i rekordy
+
+Bot pinguje odpowiednią osobę na kanale, gdy pojawi się:
+
+- Titanic,
+- Gargantuan,
+- Shiny Rainbow,
+- RAP w przedziale `4B ±100M`,
+- nowy rekord RAP na kanale,
+- nowy rekord RAP dla typu Huge, Titanic lub Gargantuan.
+
+Przedział i dodatkowy minimalny RAP można zmienić w Variables.
 
 ## Railway Variables
 
-Ustaw w Railway → Variables:
+Skopiuj wartości z `.env.example` do Railway → Variables.
+
+Najważniejsze:
 
 ```env
 TOKEN=TOKEN_BOTA
-CLIENT_ID=ID_APLIKACJI_BOTA
+CLIENT_ID=ID_APLIKACJI
 GUILD_ID=ID_SERWERA
 TIME_ZONE=Europe/Warsaw
 MAX_MESSAGES=25000
 PAWEL_DROP_CHANNEL_ID=1515437409653756005
 RYZEN_DROP_CHANNEL_ID=1524841513606189178
+PAWEL_REPORT_CHANNEL_ID=1515437409653756005
+RYZEN_REPORT_CHANNEL_ID=1524841513606189178
+PAWEL_ALERT_USER_ID=1265797244074852576
+RYZEN_ALERT_USER_ID=1330652001075335300
+ALERT_RAP_CENTER=4000000000
+ALERT_RAP_TOLERANCE=100000000
+ALERT_MIN_RAP=0
+STATE_DIR=/app/data
 ```
+
+## Railway Volume — ważne dla rekordów
+
+Dodaj Volume i ustaw mount path:
+
+```text
+/app/data
+```
+
+Dzięki temu bot zapamięta rekordy i wysłane raporty po restarcie lub redeployu. Bez Volume bot nadal działa, ale plik stanu może zniknąć po nowym deployu.
 
 ## Discord Developer Portal
 
@@ -39,23 +114,17 @@ Włącz `Message Content Intent`.
 
 Bot potrzebuje na obu kanałach:
 
-- View Channel
-- Read Message History
-- Send Messages
-- Embed Links
-- Use Application Commands
+- View Channel,
+- Read Message History,
+- Send Messages,
+- Embed Links,
+- Use Application Commands.
 
-## Uruchomienie
+## Uruchomienie lokalne
 
 ```bash
 npm install
 npm start
 ```
 
-Na Railway projekt użyje dołączonego `Dockerfile`.
-
-## Sortowanie wyników
-
-- **Najlepsze dropy** są sortowane wyłącznie według RAP, od największego.
-- **Podział petów** jest sortowany: Gargantuan > Titanic > Huge, a następnie Shiny Rainbow > Shiny Golden > Shiny > Normal.
-- Kanał **Dropy Paweł** używa zielonej emotki 🟢.
+Railway automatycznie użyje dołączonego `Dockerfile`.

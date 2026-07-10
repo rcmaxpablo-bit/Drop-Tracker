@@ -1,3 +1,6 @@
-registry=https://registry.npmjs.org/
-audit=false
-fund=false
+node_modules
+npm-debug.log*
+.git
+.gitignore
+.env
+*.zip
