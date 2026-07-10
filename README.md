@@ -53,3 +53,9 @@ npm start
 ```
 
 Na Railway projekt użyje dołączonego `Dockerfile`.
+
+## Sortowanie wyników
+
+- **Najlepsze dropy** są sortowane wyłącznie według RAP, od największego.
+- **Podział petów** jest sortowany: Gargantuan > Titanic > Huge, a następnie Shiny Rainbow > Shiny Golden > Shiny > Normal.
+- Kanał **Dropy Paweł** używa zielonej emotki 🟢.

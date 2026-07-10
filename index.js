@@ -196,12 +196,21 @@ function getTypeRank(typeOrItem) {
 }
 
 function compareByHierarchy(a, b) {
-  const variantDifference = getVariantRank(b.item) - getVariantRank(a.item);
-  if (variantDifference !== 0) return variantDifference;
-
+  // Najpierw typ peta: Gargantuan > Titanic > Huge.
+  // Dzięki temu każdy Titanic jest zawsze wyżej niż każdy Huge.
   const typeDifference = getTypeRank(b.type || b.item) - getTypeRank(a.type || a.item);
   if (typeDifference !== 0) return typeDifference;
 
+  // Dopiero w obrębie tego samego typu sortujemy wariant:
+  // Shiny Rainbow > Shiny Golden > Shiny > Normal.
+  const variantDifference = getVariantRank(b.item) - getVariantRank(a.item);
+  if (variantDifference !== 0) return variantDifference;
+
+  if (a.rap !== b.rap) return a.rap > b.rap ? -1 : 1;
+  return (b.createdAt || 0) - (a.createdAt || 0);
+}
+
+function compareByRap(a, b) {
   if (a.rap !== b.rap) return a.rap > b.rap ? -1 : 1;
   return (b.createdAt || 0) - (a.createdAt || 0);
 }
@@ -510,7 +519,7 @@ function buildResultEmbed({
   pricingWanted,
 }) {
   const totalRap = drops.reduce((sum, drop) => sum + drop.rap, 0n);
-  const sorted = [...drops].sort(compareByHierarchy);
+  const bestDropsSorted = [...drops].sort(compareByRap);
   const repricedCount = drops.filter((drop) => drop.originalRap !== drop.rap).length;
 
   const itemCounts = new Map();
@@ -545,7 +554,7 @@ function buildResultEmbed({
     .map((info) => `• **${info.item}** — ${info.count}x`)
     .join('\n') || 'Brak';
 
-  const bestDrops = sorted
+  const bestDrops = bestDropsSorted
     .slice(0, 10)
     .map((drop, index) => {
       const priceDate = drop.rapSourceCreatedAt
@@ -565,7 +574,8 @@ function buildResultEmbed({
       + `**Rodzaj:** ${typeLabel(type)}\n`
       + `**Konto:** \`${account}\`\n`
       + `**Okres:** ${from.toFormat('dd.MM.yyyy HH:mm')} – ${to.toFormat('dd.MM.yyyy HH:mm')}\n`
-      + '**Hierarchia:** Shiny Rainbow > Shiny Golden > Shiny > Normal; Gargantuan > Titanic > Huge\n'
+      + '**Podział petów:** Gargantuan > Titanic > Huge, a potem Shiny Rainbow > Shiny Golden > Shiny > Normal\n'
+      + '**Najlepsze dropy:** sortowane wyłącznie od największego RAP\n'
       + '**Wycena RAP:** najnowszy zapisany drop tego samego peta\n'
       + `**Strefa czasowa:** ${TIME_ZONE}`,
     )
@@ -586,7 +596,7 @@ function buildResultEmbed({
     })
     .setTimestamp();
 
-  if (sorted[0]?.thumbnail) embed.setThumbnail(sorted[0].thumbnail);
+  if (bestDropsSorted[0]?.thumbnail) embed.setThumbnail(bestDropsSorted[0].thumbnail);
   return embed;
 }
 
