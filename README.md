@@ -35,3 +35,9 @@ Włącz `Message Content Intent`. Na obu kanałach bot potrzebuje:
 ## Railway
 
 Wgraj zawartość ZIP-a do głównego katalogu repozytorium. Railway wykryje `Dockerfile`. Nie ustawiaj ręcznie komendy `npm ci`.
+
+## Najnowszy RAP dla starszych dropów
+
+Bot wycenia każdy znaleziony drop ceną RAP z **najnowszego zapisanego dropu tego samego peta** na wybranym kanale. Szukanie najnowszej ceny nie jest ograniczone datami wpisanymi w formularzu.
+
+Przykład: jeśli drop z 07.07.2026 miał RAP 4 460 000 000, ale najnowszy zapis tego samego peta z 10.07.2026 ma RAP 4 080 000 000, starszy drop zostanie policzony jako 4 080 000 000.

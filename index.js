@@ -119,6 +119,51 @@ function parseRap(value) {
   return digits ? BigInt(digits) : 0n;
 }
 
+function normalizeItemName(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
+    .replace(/\u00A0/g, ' ')
+    .replace(/[`*_~|]/g, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function buildLatestRapMap(drops, wantedItemKeys) {
+  const latestRaps = new Map();
+
+  for (const drop of drops) {
+    if (!drop || drop.rap <= 0n) continue;
+
+    const itemKey = normalizeItemName(drop.item);
+    if (!wantedItemKeys.has(itemKey)) continue;
+
+    const current = latestRaps.get(itemKey);
+    if (!current || drop.createdAt > current.createdAt) {
+      latestRaps.set(itemKey, drop);
+    }
+  }
+
+  return latestRaps;
+}
+
+function mergeLatestRapMaps(...maps) {
+  const merged = new Map();
+
+  for (const map of maps) {
+    for (const [itemKey, candidate] of map) {
+      const current = merged.get(itemKey);
+      if (!current || candidate.createdAt > current.createdAt) {
+        merged.set(itemKey, candidate);
+      }
+    }
+  }
+
+  return merged;
+}
+
 function parseDropFromEmbed(embed, message) {
   const parts = [embed.title, embed.description];
   for (const field of embed.fields || []) {
@@ -243,9 +288,107 @@ async function fetchDropsFromChannels(channelIds, fromMillis, toMillis) {
   };
 }
 
-function buildResultEmbed({ drops, type, account, channelLabel, from, to, scanned, hitLimit, channelsScanned }) {
+
+async function fetchLatestRaps(channel, wantedItemKeys) {
+  const latestRaps = new Map();
+  let before;
+  let scanned = 0;
+
+  while (scanned < MAX_MESSAGES && latestRaps.size < wantedItemKeys.size) {
+    const remaining = MAX_MESSAGES - scanned;
+    const batch = await channel.messages.fetch({
+      limit: Math.min(100, remaining),
+      ...(before ? { before } : {}),
+    });
+
+    if (batch.size === 0) break;
+
+    const messages = [...batch.values()].sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+    scanned += messages.length;
+
+    for (const message of messages) {
+      for (const embed of message.embeds) {
+        const parsed = parseDropFromEmbed(embed, message);
+        if (!parsed || parsed.rap <= 0n) continue;
+
+        const itemKey = normalizeItemName(parsed.item);
+        if (!wantedItemKeys.has(itemKey)) continue;
+
+        const current = latestRaps.get(itemKey);
+        if (!current || parsed.createdAt > current.createdAt) {
+          latestRaps.set(itemKey, parsed);
+        }
+      }
+    }
+
+    before = messages[messages.length - 1].id;
+  }
+
+  return {
+    latestRaps,
+    scanned,
+    hitLimit: scanned >= MAX_MESSAGES && latestRaps.size < wantedItemKeys.size,
+  };
+}
+
+async function fetchLatestRapsFromChannels(channelIds, wantedItemKeys) {
+  if (wantedItemKeys.size === 0) {
+    return { latestRaps: new Map(), scanned: 0, hitLimit: false };
+  }
+
+  const results = await Promise.all(channelIds.map(async (channelId) => {
+    const channel = await client.channels.fetch(channelId);
+
+    if (!channel || !channel.isTextBased() || !('messages' in channel)) {
+      throw new Error(`Kanał ${channelId} nie jest zwykłym kanałem tekstowym.`);
+    }
+
+    return fetchLatestRaps(channel, wantedItemKeys);
+  }));
+
+  const merged = new Map();
+  for (const result of results) {
+    for (const [itemKey, candidate] of result.latestRaps) {
+      const current = merged.get(itemKey);
+      if (!current || candidate.createdAt > current.createdAt) {
+        merged.set(itemKey, candidate);
+      }
+    }
+  }
+
+  return {
+    latestRaps: merged,
+    scanned: results.reduce((sum, result) => sum + result.scanned, 0),
+    hitLimit: results.some((result) => result.hitLimit),
+  };
+}
+
+function applyLatestRaps(drops, latestRaps) {
+  return drops.map((drop) => {
+    const latest = latestRaps.get(normalizeItemName(drop.item));
+    if (!latest) {
+      return {
+        ...drop,
+        originalRap: drop.rap,
+        rapSourceCreatedAt: drop.createdAt,
+        rapSourceChannelId: drop.channelId,
+      };
+    }
+
+    return {
+      ...drop,
+      originalRap: drop.rap,
+      rap: latest.rap,
+      rapSourceCreatedAt: latest.createdAt,
+      rapSourceChannelId: latest.channelId,
+    };
+  });
+}
+
+function buildResultEmbed({ drops, type, account, channelLabel, from, to, scanned, hitLimit, channelsScanned, pricingFound, pricingWanted }) {
   const totalRap = drops.reduce((sum, drop) => sum + drop.rap, 0n);
   const sorted = [...drops].sort((a, b) => (a.rap === b.rap ? 0 : a.rap > b.rap ? -1 : 1));
+  const repricedCount = drops.filter((drop) => drop.originalRap !== drop.rap).length;
 
   const itemCounts = new Map();
   for (const drop of drops) {
@@ -264,10 +407,14 @@ function buildResultEmbed({ drops, type, account, channelLabel, from, to, scanne
 
   const bestDrops = sorted
     .slice(0, 10)
-    .map((drop, index) =>
-      `${index + 1}. **${drop.item}**\n` +
-      `   RAP: \`${formatBigInt(drop.rap)}\` • konto: \`${drop.account}\` • ${formatDateTime(drop.createdAt)}`,
-    )
+    .map((drop, index) => {
+      const priceDate = drop.rapSourceCreatedAt
+        ? ` • cena RAP z ${formatDateTime(drop.rapSourceCreatedAt)}`
+        : '';
+
+      return `${index + 1}. **${drop.item}**\n` +
+        `   RAP: \`${formatBigInt(drop.rap)}\` • konto: \`${drop.account}\` • drop: ${formatDateTime(drop.createdAt)}${priceDate}`;
+    })
     .join('\n') || 'Brak';
 
   const embed = new EmbedBuilder()
@@ -278,6 +425,7 @@ function buildResultEmbed({ drops, type, account, channelLabel, from, to, scanne
       `**Rodzaj:** ${typeLabel(type)}\n` +
       `**Konto:** \`${account}\`\n` +
       `**Okres:** ${from.toFormat('dd.MM.yyyy HH:mm')} – ${to.toFormat('dd.MM.yyyy HH:mm')}\n` +
+      `**Wycena RAP:** najnowszy zapisany drop tego samego peta\n` +
       `**Strefa czasowa:** ${TIME_ZONE}`,
     )
     .addFields(
@@ -285,6 +433,8 @@ function buildResultEmbed({ drops, type, account, channelLabel, from, to, scanne
       { name: '💎 Łączny RAP', value: `\`${formatBigInt(totalRap)}\``, inline: true },
       { name: '🔎 Wiadomości sprawdzone', value: `\`${scanned}\``, inline: true },
       { name: '📡 Kanały sprawdzone', value: `\`${channelsScanned}\``, inline: true },
+      { name: '💹 Ceny znalezione', value: `\`${pricingFound}/${pricingWanted}\``, inline: true },
+      { name: '🔄 Dropy przeliczone', value: `\`${repricedCount}\``, inline: true },
       { name: '🐾 Podział petów', value: truncate(itemSummary) },
       { name: '🏆 Najlepsze dropy', value: truncate(bestDrops) },
     )
@@ -526,16 +676,40 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return typeMatches && accountMatches;
       });
 
+      // Dla każdego peta z wyniku szukamy najnowszego dropu w wybranym kanale
+      // (również poza wybranym zakresem dat) i używamy jego RAP do całej wyceny.
+      const wantedItemKeys = new Set(filtered.map((drop) => normalizeItemName(drop.item)));
+
+      // Najpierw budujemy ceny z wiadomości już pobranych dla wybranego okresu.
+      // Dzięki temu późniejszy drop z tego samego zakresu zawsze nadpisze starszy,
+      // nawet jeżeli kanał ma bardzo dużo nowszych wiadomości.
+      const latestRapsInSelectedRange = buildLatestRapMap(result.drops, wantedItemKeys);
+
+      // Następnie sprawdzamy cały najnowszy fragment historii kanału, aby znaleźć
+      // jeszcze nowszą cenę także poza zakresem dat podanym w formularzu.
+      const latestRapResult = await fetchLatestRapsFromChannels(
+        channelSelection.ids,
+        wantedItemKeys,
+      );
+
+      const finalLatestRaps = mergeLatestRapMaps(
+        latestRapsInSelectedRange,
+        latestRapResult.latestRaps,
+      );
+      const repricedDrops = applyLatestRaps(filtered, finalLatestRaps);
+
       const embed = buildResultEmbed({
-        drops: filtered,
+        drops: repricedDrops,
         type,
         account: allAccounts ? 'wszystkie' : accountRaw,
         channelLabel: channelSelection.label,
         from,
         to,
-        scanned: result.scanned,
-        hitLimit: result.hitLimit,
+        scanned: result.scanned + latestRapResult.scanned,
+        hitLimit: result.hitLimit || latestRapResult.hitLimit,
         channelsScanned: result.channelsScanned,
+        pricingFound: finalLatestRaps.size,
+        pricingWanted: wantedItemKeys.size,
       });
 
       await interaction.editReply({ embeds: [embed] });
