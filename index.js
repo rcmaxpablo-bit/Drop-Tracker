@@ -29,21 +29,38 @@ for (const key of REQUIRED_ENV) {
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID || '';
-const DEFAULT_DROP_CHANNEL_IDS = [
-  '1515437409653756005', // dropy-paweł
-  '1524841513606189178', // dropy-ryzen
+
+const DROP_CHANNELS = [
+  {
+    key: 'pawel',
+    label: 'Dropy Paweł',
+    id: process.env.PAWEL_DROP_CHANNEL_ID || '1515437409653756005',
+    emoji: '🟠',
+  },
+  {
+    key: 'ryzen',
+    label: 'Dropy Ryzen',
+    id: process.env.RYZEN_DROP_CHANNEL_ID || '1524841513606189178',
+    emoji: '🔵',
+  },
 ];
 
-const configuredChannelIds = String(
-  process.env.DROP_CHANNEL_IDS || process.env.DROP_CHANNEL_ID || '',
-)
-  .split(/[\s,;]+/)
-  .map((id) => id.trim())
-  .filter(Boolean);
+function getChannelSelection(channelKey) {
+  if (channelKey === 'all') {
+    return {
+      label: 'Oba kanały',
+      ids: DROP_CHANNELS.map((channel) => channel.id),
+    };
+  }
 
-const DROP_CHANNEL_IDS = [
-  ...new Set(configuredChannelIds.length > 0 ? configuredChannelIds : DEFAULT_DROP_CHANNEL_IDS),
-];
+  const channel = DROP_CHANNELS.find((entry) => entry.key === channelKey);
+  if (!channel) return null;
+
+  return {
+    label: channel.label,
+    ids: [channel.id],
+  };
+}
 const TIME_ZONE = process.env.TIME_ZONE || 'Europe/Warsaw';
 const MAX_MESSAGES = Math.max(100, Number(process.env.MAX_MESSAGES || 25000));
 
@@ -226,7 +243,7 @@ async function fetchDropsFromChannels(channelIds, fromMillis, toMillis) {
   };
 }
 
-function buildResultEmbed({ drops, type, account, from, to, scanned, hitLimit, channelsScanned }) {
+function buildResultEmbed({ drops, type, account, channelLabel, from, to, scanned, hitLimit, channelsScanned }) {
   const totalRap = drops.reduce((sum, drop) => sum + drop.rap, 0n);
   const sorted = [...drops].sort((a, b) => (a.rap === b.rap ? 0 : a.rap > b.rap ? -1 : 1));
 
@@ -257,6 +274,7 @@ function buildResultEmbed({ drops, type, account, from, to, scanned, hitLimit, c
     .setTitle('📊 Podsumowanie dropów')
     .setColor(0xffa500)
     .setDescription(
+      `**Kanał:** ${channelLabel}\n` +
       `**Rodzaj:** ${typeLabel(type)}\n` +
       `**Konto:** \`${account}\`\n` +
       `**Okres:** ${from.toFormat('dd.MM.yyyy HH:mm')} – ${to.toFormat('dd.MM.yyyy HH:mm')}\n` +
@@ -304,8 +322,53 @@ client.once(Events.ClientReady, async (readyClient) => {
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.isChatInputCommand() && interaction.commandName === 'drop') {
-      const select = new StringSelectMenuBuilder()
-        .setCustomId(`drop_type:${interaction.user.id}`)
+      const channelSelect = new StringSelectMenuBuilder()
+        .setCustomId(`drop_channel:${interaction.user.id}`)
+        .setPlaceholder('Wybierz kanał z dropami')
+        .addOptions(
+          ...DROP_CHANNELS.map((channel) =>
+            new StringSelectMenuOptionBuilder()
+              .setLabel(channel.label)
+              .setValue(channel.key)
+              .setEmoji(channel.emoji),
+          ),
+          new StringSelectMenuOptionBuilder()
+            .setLabel('Oba kanały')
+            .setDescription('Łączy dropy Pawła i Ryzena')
+            .setValue('all')
+            .setEmoji('📡'),
+        );
+
+      await interaction.reply({
+        content: 'Najpierw wybierz, z którego kanału bot ma liczyć dropy:',
+        components: [new ActionRowBuilder().addComponents(channelSelect)],
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('drop_channel:')) {
+      const ownerId = interaction.customId.split(':')[1];
+      if (interaction.user.id !== ownerId) {
+        await interaction.reply({
+          content: 'To menu należy do innej osoby.',
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const channelKey = interaction.values[0];
+      const channelSelection = getChannelSelection(channelKey);
+      if (!channelSelection) {
+        await interaction.update({
+          content: '❌ Nie znaleziono wybranego kanału.',
+          components: [],
+        });
+        return;
+      }
+
+      const typeSelect = new StringSelectMenuBuilder()
+        .setCustomId(`drop_type:${interaction.user.id}:${channelKey}`)
         .setPlaceholder('Wybierz rodzaj peta')
         .addOptions(
           new StringSelectMenuOptionBuilder()
@@ -326,19 +389,27 @@ client.on(Events.InteractionCreate, async (interaction) => {
             .setEmoji('📦'),
         );
 
-      await interaction.reply({
-        content: 'Najpierw wybierz rodzaj peta:',
-        components: [new ActionRowBuilder().addComponents(select)],
-        flags: MessageFlags.Ephemeral,
+      await interaction.update({
+        content: `Wybrany kanał: **${channelSelection.label}**\nTeraz wybierz rodzaj peta:`,
+        components: [new ActionRowBuilder().addComponents(typeSelect)],
       });
       return;
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('drop_type:')) {
-      const ownerId = interaction.customId.split(':')[1];
+      const [, ownerId, channelKey] = interaction.customId.split(':');
       if (interaction.user.id !== ownerId) {
         await interaction.reply({
           content: 'To menu należy do innej osoby.',
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const channelSelection = getChannelSelection(channelKey);
+      if (!channelSelection) {
+        await interaction.reply({
+          content: '❌ Nie znaleziono wybranego kanału.',
           flags: MessageFlags.Ephemeral,
         });
         return;
@@ -348,8 +419,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const today = DateTime.now().setZone(TIME_ZONE).toFormat('dd.MM.yyyy');
 
       const modal = new ModalBuilder()
-        .setCustomId(`drop_modal:${interaction.user.id}:${type}`)
-        .setTitle(`Dropy — ${typeLabel(type)}`);
+        .setCustomId(`drop_modal:${interaction.user.id}:${channelKey}:${type}`)
+        .setTitle(`${channelSelection.label} — ${typeLabel(type)}`);
 
       const accountInput = new TextInputBuilder()
         .setCustomId('account')
@@ -404,7 +475,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     if (interaction.isModalSubmit() && interaction.customId.startsWith('drop_modal:')) {
-      const [, ownerId, type] = interaction.customId.split(':');
+      const [, ownerId, channelKey, type] = interaction.customId.split(':');
       if (interaction.user.id !== ownerId) {
         await interaction.reply({
           content: 'Ten formularz należy do innej osoby.',
@@ -436,8 +507,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
 
+      const channelSelection = getChannelSelection(channelKey);
+      if (!channelSelection) {
+        await interaction.editReply('❌ Nie znaleziono wybranego kanału. Użyj ponownie `/drop`.');
+        return;
+      }
+
       const result = await fetchDropsFromChannels(
-        DROP_CHANNEL_IDS,
+        channelSelection.ids,
         from.toMillis(),
         to.toMillis(),
       );
@@ -453,6 +530,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         drops: filtered,
         type,
         account: allAccounts ? 'wszystkie' : accountRaw,
+        channelLabel: channelSelection.label,
         from,
         to,
         scanned: result.scanned,

@@ -1,26 +1,30 @@
 # DropVault Bot — Railway
 
-Ta wersja jest przygotowana pod Railway i używa Dockerfile.
-Nie zawiera package-lock.json, który powodował błąd `npm ci`.
+Bot liczy dropy osobno z kanału Pawła albo Ryzena. Po wpisaniu `/drop` najpierw wybierasz kanał, potem rodzaj peta, konto oraz zakres dat i godzin. Opcja **Oba kanały** jest dostępna tylko wtedy, gdy celowo chcesz połączyć wyniki.
 
 ## Zmienne Railway
 
-Dodaj w zakładce Variables:
+Dodaj w zakładce **Variables**:
 
 - `TOKEN` — token bota
-- `CLIENT_ID` — Application ID
+- `CLIENT_ID` — Application ID bota
 - `GUILD_ID` — ID serwera Discord
 - `TIME_ZONE=Europe/Warsaw`
 - `MAX_MESSAGES=25000`
 
 Kanały są już wpisane w `index.js`:
 
-- dropy-paweł: `1515437409653756005`
-- dropy-ryzen: `1524841513606189178`
+- Dropy Paweł: `1515437409653756005`
+- Dropy Ryzen: `1524841513606189178`
 
-## Discord
+Opcjonalnie możesz nadpisać je zmiennymi:
 
-Włącz `Message Content Intent` i nadaj botowi na obu kanałach:
+- `PAWEL_DROP_CHANNEL_ID`
+- `RYZEN_DROP_CHANNEL_ID`
+
+## Uprawnienia Discord
+
+Włącz `Message Content Intent`. Na obu kanałach bot potrzebuje:
 
 - View Channel
 - Read Message History
@@ -30,6 +34,4 @@ Włącz `Message Content Intent` i nadaj botowi na obu kanałach:
 
 ## Railway
 
-Wgraj zawartość tego folderu do głównego katalogu repozytorium.
-Railway automatycznie wykryje plik `Dockerfile`.
-Nie ustawiaj ręcznie komendy `npm ci`.
+Wgraj zawartość ZIP-a do głównego katalogu repozytorium. Railway wykryje `Dockerfile`. Nie ustawiaj ręcznie komendy `npm ci`.
