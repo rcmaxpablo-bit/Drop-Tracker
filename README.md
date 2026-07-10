@@ -1,14 +1,35 @@
-# Discord Drop Tracker
+# DropVault Bot — Railway
 
-Bot dodaje komendę `/drop` i analizuje embedy webhooków z kanału ustawionego w `DROP_CHANNEL_ID`.
+Ta wersja jest przygotowana pod Railway i używa Dockerfile.
+Nie zawiera package-lock.json, który powodował błąd `npm ci`.
+
+## Zmienne Railway
+
+Dodaj w zakładce Variables:
+
+- `TOKEN` — token bota
+- `CLIENT_ID` — Application ID
+- `GUILD_ID` — ID serwera Discord
+- `TIME_ZONE=Europe/Warsaw`
+- `MAX_MESSAGES=25000`
+
+Kanały są już wpisane w `index.js`:
+
+- dropy-paweł: `1515437409653756005`
+- dropy-ryzen: `1524841513606189178`
+
+## Discord
+
+Włącz `Message Content Intent` i nadaj botowi na obu kanałach:
+
+- View Channel
+- Read Message History
+- Send Messages
+- Embed Links
+- Use Application Commands
 
 ## Railway
 
-1. Wrzuć folder do repozytorium GitHub.
-2. Na Railway utwórz projekt z tego repozytorium.
-3. W `Variables` dodaj wartości z `.env.example`.
-4. W Discord Developer Portal włącz `Message Content Intent`.
-5. Zaproś bota z zakresami `bot` oraz `applications.commands`.
-6. Na kanale z webhookami bot potrzebuje: View Channel i Read Message History.
-
-`GUILD_ID` sprawia, że komenda pojawia się od razu tylko na jednym serwerze. Po usunięciu tej zmiennej komenda jest rejestrowana globalnie.
+Wgraj zawartość tego folderu do głównego katalogu repozytorium.
+Railway automatycznie wykryje plik `Dockerfile`.
+Nie ustawiaj ręcznie komendy `npm ci`.

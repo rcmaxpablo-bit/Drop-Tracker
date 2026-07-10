@@ -1,16 +1,17 @@
 {
-  "name": "discord-drop-tracker",
-  "version": "1.0.0",
-  "description": "Bot Discord do liczenia dropów Huge, Titanic i Gargantuan z webhooków.",
+  "name": "dropvault-bot",
+  "version": "1.0.1",
+  "private": true,
+  "description": "Discord bot for counting Huge, Titanic and Gargantuan drops from webhook embeds.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "engines": {
-    "node": ">=22"
+    "node": "22.x"
   },
   "dependencies": {
-    "discord.js": "^14.26.5",
-    "luxon": "^3.7.2"
+    "discord.js": "14.26.4",
+    "luxon": "3.7.2"
   }
 }

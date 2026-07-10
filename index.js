@@ -18,7 +18,7 @@ const {
 } = require('discord.js');
 const { DateTime } = require('luxon');
 
-const REQUIRED_ENV = ['TOKEN', 'CLIENT_ID', 'DROP_CHANNEL_ID'];
+const REQUIRED_ENV = ['TOKEN', 'CLIENT_ID'];
 for (const key of REQUIRED_ENV) {
   if (!process.env[key]) {
     console.error(`Brak zmiennej środowiskowej: ${key}`);
@@ -29,7 +29,21 @@ for (const key of REQUIRED_ENV) {
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID || '';
-const DROP_CHANNEL_ID = process.env.DROP_CHANNEL_ID;
+const DEFAULT_DROP_CHANNEL_IDS = [
+  '1515437409653756005', // dropy-paweł
+  '1524841513606189178', // dropy-ryzen
+];
+
+const configuredChannelIds = String(
+  process.env.DROP_CHANNEL_IDS || process.env.DROP_CHANNEL_ID || '',
+)
+  .split(/[\s,;]+/)
+  .map((id) => id.trim())
+  .filter(Boolean);
+
+const DROP_CHANNEL_IDS = [
+  ...new Set(configuredChannelIds.length > 0 ? configuredChannelIds : DEFAULT_DROP_CHANNEL_IDS),
+];
 const TIME_ZONE = process.env.TIME_ZONE || 'Europe/Warsaw';
 const MAX_MESSAGES = Math.max(100, Number(process.env.MAX_MESSAGES || 25000));
 
@@ -112,6 +126,7 @@ function parseDropFromEmbed(embed, message) {
     account,
     rap: parseRap(rapRaw),
     thumbnail: embed.thumbnail?.url || null,
+    channelId: message.channelId,
   };
 }
 
@@ -191,7 +206,27 @@ async function fetchDrops(channel, fromMillis, toMillis) {
   };
 }
 
-function buildResultEmbed({ drops, type, account, from, to, scanned, hitLimit }) {
+async function fetchDropsFromChannels(channelIds, fromMillis, toMillis) {
+  const results = await Promise.all(channelIds.map(async (channelId) => {
+    const channel = await client.channels.fetch(channelId);
+
+    if (!channel || !channel.isTextBased() || !('messages' in channel)) {
+      throw new Error(`Kanał ${channelId} nie jest zwykłym kanałem tekstowym.`);
+    }
+
+    const result = await fetchDrops(channel, fromMillis, toMillis);
+    return { channelId, ...result };
+  }));
+
+  return {
+    drops: results.flatMap((result) => result.drops),
+    scanned: results.reduce((sum, result) => sum + result.scanned, 0),
+    hitLimit: results.some((result) => result.hitLimit),
+    channelsScanned: results.length,
+  };
+}
+
+function buildResultEmbed({ drops, type, account, from, to, scanned, hitLimit, channelsScanned }) {
   const totalRap = drops.reduce((sum, drop) => sum + drop.rap, 0n);
   const sorted = [...drops].sort((a, b) => (a.rap === b.rap ? 0 : a.rap > b.rap ? -1 : 1));
 
@@ -231,12 +266,13 @@ function buildResultEmbed({ drops, type, account, from, to, scanned, hitLimit })
       { name: '🎁 Liczba dropów', value: `\`${drops.length}\``, inline: true },
       { name: '💎 Łączny RAP', value: `\`${formatBigInt(totalRap)}\``, inline: true },
       { name: '🔎 Wiadomości sprawdzone', value: `\`${scanned}\``, inline: true },
+      { name: '📡 Kanały sprawdzone', value: `\`${channelsScanned}\``, inline: true },
       { name: '🐾 Podział petów', value: truncate(itemSummary) },
       { name: '🏆 Najlepsze dropy', value: truncate(bestDrops) },
     )
     .setFooter({
       text: hitLimit
-        ? `Osiągnięto limit ${MAX_MESSAGES} wiadomości — zwiększ MAX_MESSAGES na Railway.`
+        ? `Na co najmniej jednym kanale osiągnięto limit ${MAX_MESSAGES} wiadomości — zwiększ MAX_MESSAGES na Railway.`
         : 'Drop Tracker',
     })
     .setTimestamp();
@@ -400,13 +436,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
 
-      const channel = await client.channels.fetch(DROP_CHANNEL_ID);
-      if (!channel || !channel.isTextBased() || !('messages' in channel)) {
-        await interaction.editReply('❌ DROP_CHANNEL_ID nie wskazuje zwykłego kanału tekstowego.');
-        return;
-      }
-
-      const result = await fetchDrops(channel, from.toMillis(), to.toMillis());
+      const result = await fetchDropsFromChannels(
+        DROP_CHANNEL_IDS,
+        from.toMillis(),
+        to.toMillis(),
+      );
       const allAccounts = ['wszystkie', 'all', '*'].includes(accountRaw.toLowerCase());
 
       const filtered = result.drops.filter((drop) => {
@@ -423,6 +457,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         to,
         scanned: result.scanned,
         hitLimit: result.hitLimit,
+        channelsScanned: result.channelsScanned,
       });
 
       await interaction.editReply({ embeds: [embed] });
