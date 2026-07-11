@@ -1,4 +1,4 @@
-# DropVault Bot 2.1 — PS99RAP
+# DropVault Bot 2.2 — uporządkowane `/petvalue`
 
 Bot Discord do analizowania dropów Huge, Titanic i Gargantuan z dwóch oddzielnych kanałów.
 Aktualne ceny oraz historia RAP są pobierane z publicznego API `ps99rap.com`.
@@ -54,16 +54,26 @@ Przykład:
 
 ### `/petvalue`
 
-Pokazuje historię cen bezpośrednio z PS99RAP:
+Pokazuje uporządkowaną historię cen **wyłącznie z PS99RAP**. Nie wybiera się już kanału ani konta, więc dane Pawła i Ryzena nie są mieszane.
 
-- pierwszy i najnowszy RAP,
-- zmianę kwotową i procentową,
+Przykład:
+
+```text
+/petvalue nazwa:Titanic Goalie Octopus okres:Ostatnie 30 dni
+```
+
+- okres: 7, 30, 90, 180 dni albo cała historia,
+- opcjonalne własne daty `data_od` i `data_do`,
+- jedna końcowa cena na każdy dzień,
+- pokazywane są tylko faktyczne zmiany RAP,
+- najnowsze daty są zawsze na górze,
+- daty mają czytelny format `DD.MM.RRRR`,
+- pierwszy RAP, aktualny RAP i zmiana procentowa,
 - najniższy oraz najwyższy RAP,
-- historię punktów cenowych z datami,
 - przyciski Poprzednia / Następna,
 - link do strony przedmiotu w PS99RAP.
 
-Gdy API historii jest niedostępne, bot używa zapisów RAP z wiadomości Discord jako fallback.
+Jeżeli PS99RAP nie odpowiada, bot pokazuje jasny komunikat zamiast mieszać historię z wiadomościami Discord.
 
 ### Raport dzienny
 

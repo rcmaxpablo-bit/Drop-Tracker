@@ -169,21 +169,23 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName('petvalue')
-    .setDescription('Pokazuje historię RAP peta z PS99RAP')
+    .setDescription('Pokazuje czystą historię RAP peta wyłącznie z PS99RAP')
     .addStringOption((option) => option
       .setName('nazwa')
       .setDescription('Zacznij wpisywać nazwę peta')
       .setRequired(true)
       .setAutocomplete(true))
-    .addStringOption((option) => addChannelChoices(option
-      .setName('kanal')
-      .setDescription('Kanał, na którym szukać')
-      .setRequired(true)))
     .addStringOption((option) => option
-      .setName('konto')
-      .setDescription('Konto Roblox; zostaw puste, aby wybrać wszystkie')
+      .setName('okres')
+      .setDescription('Zakres historii; własne daty mają pierwszeństwo')
       .setRequired(false)
-      .setAutocomplete(true))
+      .addChoices(
+        { name: 'Ostatnie 7 dni', value: '7d' },
+        { name: 'Ostatnie 30 dni', value: '30d' },
+        { name: 'Ostatnie 90 dni', value: '90d' },
+        { name: 'Ostatnie 180 dni', value: '180d' },
+        { name: 'Cała historia', value: 'all' },
+      ))
     .addStringOption((option) => option
       .setName('data_od')
       .setDescription('Opcjonalnie DD.MM.RRRR')
@@ -780,6 +782,10 @@ function formatDateTime(timestamp) {
   return DateTime.fromMillis(timestamp, { zone: TIME_ZONE }).toFormat('dd.MM.yyyy HH:mm');
 }
 
+function formatDateOnly(timestamp) {
+  return DateTime.fromMillis(timestamp, { zone: TIME_ZONE }).toFormat('dd.MM.yyyy');
+}
+
 function truncate(value, max = 1024) {
   const text = String(value || '');
   return text.length <= max ? text : `${text.slice(0, max - 3)}...`;
@@ -1214,17 +1220,17 @@ function buildPetValuePageEmbed(session, page) {
   const start = page * HISTORY_PAGE_SIZE;
   const pageEntries = session.priceHistory.slice(start, start + HISTORY_PAGE_SIZE);
 
-  const history = pageEntries.map((drop, index) => {
-    const previous = session.priceHistory[start + index - 1];
-    const delta = previous ? drop.rap - previous.rap : 0n;
-    const deltaText = previous ? ` • zmiana: \`${formatSignedBigInt(delta)}\`` : '';
-    const sourceText = drop.source === 'ps99rap'
-      ? `[PS99RAP](${drop.sourceUrl || session.sourceUrl})`
-      : `konto: \`${drop.account}\` • ${getChannelLabelById(drop.channelId)}`;
+  const history = pageEntries.map((point, index) => {
+    const absoluteIndex = start + index;
+    const olderPoint = session.priceHistory[absoluteIndex + 1];
+    const delta = olderPoint ? point.rap - olderPoint.rap : null;
+    const deltaText = delta == null
+      ? ''
+      : ` • zmiana: \`${formatSignedBigInt(delta)}\``;
+    const currentText = point.isCurrent ? ' • **aktualna cena**' : '';
 
-    return `${start + index + 1}. **${formatDateTime(drop.createdAt)}**\n`
-      + `   RAP: \`${formatBigInt(drop.rap)}\`${deltaText}\n`
-      + `   źródło: ${sourceText}`;
+    return `${absoluteIndex + 1}. **${formatDateOnly(point.createdAt)}**${currentText}\n`
+      + `   RAP: \`${formatBigInt(point.rap)}\`${deltaText}`;
   }).join('\n') || 'Brak';
 
   const percentText = session.oldestRap > 0n
@@ -1232,28 +1238,23 @@ function buildPetValuePageEmbed(session, page) {
     : 'brak danych';
 
   const embed = new EmbedBuilder()
-    .setTitle(`💹 Zmiana RAP: ${session.displayName}`)
+    .setTitle(`💹 RAP: ${session.displayName}`)
     .setColor(session.change >= 0n ? 0x57f287 : 0xed4245)
     .setDescription(
-      `**Źródło historii:** ${session.historySource}\n`
-      + `**Kanał dropów:** ${session.channelLabel}\n`
-      + `**Konto:** \`${session.account}\`\n`
+      '**Źródło:** wyłącznie PS99RAP — bez mieszania kanałów i kont\n'
       + `**Zakres:** ${session.dateLabel}\n`
-      + `**Pierwszy RAP:** \`${formatBigInt(session.oldestRap)}\`\n`
-      + `**Najnowszy RAP:** \`${formatBigInt(session.latestRap)}\`\n`
-      + `**Zmiana:** \`${formatSignedBigInt(session.change)}\` (${percentText})`,
+      + '**Kolejność:** najnowsze daty są na górze\n'
+      + `**RAP na początku zakresu:** \`${formatBigInt(session.oldestRap)}\`\n`
+      + `**${session.latestLabel}:** \`${formatBigInt(session.latestRap)}\`\n`
+      + `**Łączna zmiana:** \`${formatSignedBigInt(session.change)}\` (${percentText})`,
     )
     .addFields(
       { name: '📉 Najniższy RAP', value: `\`${formatBigInt(session.minRap)}\``, inline: true },
       { name: '📈 Najwyższy RAP', value: `\`${formatBigInt(session.maxRap)}\``, inline: true },
-      { name: '🧾 Zapisów ceny', value: `\`${session.priceHistory.length}\``, inline: true },
-      { name: '📜 Historia cen', value: truncate(history) },
+      { name: '🧾 Zmian ceny', value: `\`${session.priceHistory.length}\``, inline: true },
+      { name: '📜 Historia cen — najnowsze u góry', value: truncate(history) },
     )
-    .setFooter({
-      text: session.historySource === 'PS99RAP'
-        ? 'Historia RAP: ps99rap.com'
-        : `Fallback z wiadomości • sprawdzono ${session.scanned} wiadomości`,
-    })
+    .setFooter({ text: `PS99RAP • strona ${page + 1}/${session.pageCount}` })
     .setTimestamp();
 
   if (session.sourceUrl) embed.setURL(session.sourceUrl);
@@ -1757,7 +1758,9 @@ function autocompleteChoices(values, query) {
 
 async function handleAutocomplete(interaction) {
   const focused = interaction.options.getFocused(true);
-  const channelKey = interaction.options.getString('kanal') || 'all';
+  const channelKey = interaction.commandName === 'petvalue'
+    ? 'all'
+    : interaction.options.getString('kanal') || 'all';
   const catalog = getCombinedCatalog(channelKey);
 
   if (focused.name === 'nazwa') {
@@ -1912,109 +1915,128 @@ async function executePetValueCommand(interaction) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   const queryRaw = interaction.options.getString('nazwa', true).trim();
-  const channelKey = interaction.options.getString('kanal', true);
-  const accountRaw = interaction.options.getString('konto')?.trim() || 'wszystkie';
+  const period = interaction.options.getString('okres') || '30d';
   const dateFromRaw = interaction.options.getString('data_od')?.trim() || '';
   const dateToRaw = interaction.options.getString('data_do')?.trim() || '';
   const query = normalizeItemName(queryRaw);
 
-  const from = parseOptionalDate(dateFromRaw, false);
-  const to = parseOptionalDate(dateToRaw, true);
-  if (dateFromRaw && !from) {
+  const customFrom = parseOptionalDate(dateFromRaw, false);
+  const customTo = parseOptionalDate(dateToRaw, true);
+  if (dateFromRaw && !customFrom) {
     await interaction.editReply('❌ Nieprawidłowa data „od”. Użyj `DD.MM.RRRR`.');
     return;
   }
-  if (dateToRaw && !to) {
+  if (dateToRaw && !customTo) {
     await interaction.editReply('❌ Nieprawidłowa data „do”. Użyj `DD.MM.RRRR`.');
     return;
   }
 
-  const effectiveFrom = from || DateTime.fromISO('2015-01-01', { zone: TIME_ZONE }).startOf('day');
-  const effectiveTo = to || DateTime.now().setZone(TIME_ZONE).endOf('day');
+  const now = DateTime.now().setZone(TIME_ZONE);
+  let effectiveTo = customTo || now.endOf('day');
+  let effectiveFrom;
+  let dateLabel;
+
+  if (customFrom || customTo) {
+    effectiveFrom = customFrom || DateTime.fromISO('2015-01-01', { zone: TIME_ZONE }).startOf('day');
+    dateLabel = `${effectiveFrom.toFormat('dd.MM.yyyy')} – ${effectiveTo.toFormat('dd.MM.yyyy')}`;
+  } else if (period === 'all') {
+    effectiveFrom = DateTime.fromISO('2015-01-01', { zone: TIME_ZONE }).startOf('day');
+    dateLabel = 'cała historia dostępna w PS99RAP';
+  } else {
+    const days = { '7d': 7, '30d': 30, '90d': 90, '180d': 180 }[period] || 30;
+    effectiveFrom = now.minus({ days: days - 1 }).startOf('day');
+    dateLabel = `ostatnie ${days} dni`;
+  }
+
   if (effectiveTo < effectiveFrom) {
     await interaction.editReply('❌ Data „do” nie może być wcześniejsza niż data „od”.');
     return;
   }
 
-  const selection = getChannelSelection(channelKey);
-  if (!selection) {
-    await interaction.editReply('❌ Nie znaleziono wybranego kanału.');
-    return;
-  }
+  // Nazwa jest ustalana z katalogu obu kanałów wyłącznie dla autouzupełniania.
+  // Sama historia i wycena pochodzą już tylko z PS99RAP.
+  const catalog = getCombinedCatalog('all');
+  const names = [...catalog.items.values()];
+  const exactName = names.find((name) => normalizeItemName(name) === query);
+  const partialNames = names.filter((name) => normalizeItemName(name).includes(query));
 
-  const result = await fetchDropsFromChannels(
-    selection.ids,
-    effectiveFrom.toMillis(),
-    effectiveTo.toMillis(),
-  );
-  const accountFiltered = result.drops.filter((drop) => accountMatches(drop.account, accountRaw));
-  const exact = accountFiltered.filter((drop) => normalizeItemName(drop.item) === query);
-  const partial = accountFiltered.filter((drop) => normalizeItemName(drop.item).includes(query));
-
-  const partialNames = new Map();
-  for (const drop of partial) partialNames.set(normalizeItemName(drop.item), drop.item);
-
-  if (exact.length === 0 && partialNames.size > 1) {
-    const examples = [...partialNames.values()].slice(0, 8).map((name) => `• ${name}`).join('\n');
+  if (!exactName && partialNames.length > 1) {
+    const examples = partialNames.slice(0, 8).map((name) => `• ${name}`).join('\n');
     await interaction.editReply(
       `❌ Ta część nazwy pasuje do kilku petów. Wybierz pełną nazwę z autouzupełniania:\n${examples}`,
     );
     return;
   }
 
-  const matched = exact.length > 0
-    ? exact
-    : partialNames.size === 1
-      ? partial.filter((drop) => normalizeItemName(drop.item) === [...partialNames.keys()][0])
-      : [];
-  const displayName = exact[0]?.item || [...partialNames.values()][0] || queryRaw;
-
+  const displayName = exactName || partialNames[0] || queryRaw;
   const ps99RapHistory = await fetchPs99RapHistory(displayName);
-  let rawHistory = ps99RapHistory.history.filter((point) => (
-    point.createdAt >= effectiveFrom.toMillis()
-    && point.createdAt <= effectiveTo.toMillis()
-  ));
-  let historySource = 'PS99RAP';
-  let sourceUrl = ps99RapHistory.sourceUrl;
 
-  if (rawHistory.length === 0 && ps99RapHistory.history.length > 0) {
+  if (ps99RapHistory.error) {
     await interaction.editReply(
-      `❌ PS99RAP nie ma punktów cenowych dla **${displayName}** w wybranym zakresie dat.`,
+      `❌ PS99RAP chwilowo nie odpowiada dla **${displayName}**. Spróbuj ponownie za chwilę.`,
     );
     return;
   }
 
-  if (rawHistory.length === 0) {
-    if (matched.length === 0) {
-      await interaction.editReply(
-        `❌ Nie znaleziono historii peta \`${queryRaw}\` ani w PS99RAP, ani na wybranym kanale.`,
-      );
-      return;
+  const filtered = ps99RapHistory.history
+    .filter((point) => (
+      point.createdAt >= effectiveFrom.toMillis()
+      && point.createdAt <= effectiveTo.toMillis()
+    ))
+    .sort((a, b) => a.createdAt - b.createdAt);
+
+  if (filtered.length === 0) {
+    await interaction.editReply(
+      `❌ PS99RAP nie ma historii ceny dla **${displayName}** w zakresie: ${dateLabel}.`,
+    );
+    return;
+  }
+
+  // Zostawiamy ostatnią cenę z każdego dnia. Dzięki temu daty są czytelne,
+  // nie ma kilku chaotycznych wpisów z tego samego dnia.
+  const lastPointByDay = new Map();
+  for (const point of filtered) {
+    const dayKey = DateTime.fromMillis(point.createdAt, { zone: TIME_ZONE }).toISODate();
+    lastPointByDay.set(dayKey, point);
+  }
+
+  const dailyPoints = [...lastPointByDay.values()].sort((a, b) => a.createdAt - b.createdAt);
+  const chronologicalChanges = [];
+  for (const point of dailyPoints) {
+    const previous = chronologicalChanges[chronologicalChanges.length - 1];
+    if (!previous || previous.rap !== point.rap) chronologicalChanges.push(point);
+  }
+
+  // Dopisz bieżący RAP z PS99RAP, jeżeli różni się od ostatniego zapisu historii.
+  const rangeIncludesToday = effectiveTo.toMillis() >= now.startOf('day').toMillis();
+  const currentPriceResult = rangeIncludesToday
+    ? await fetchPs99RapPrices([displayName])
+    : { prices: new Map() };
+  const currentPrice = currentPriceResult.prices.get(normalizeItemName(displayName));
+  if (currentPrice?.rap > 0n) {
+    const previous = chronologicalChanges[chronologicalChanges.length - 1];
+    if (!previous || previous.rap !== currentPrice.rap) {
+      chronologicalChanges.push({
+        createdAt: Date.now(),
+        rap: currentPrice.rap,
+        source: 'ps99rap',
+        sourceUrl: currentPrice.sourceUrl || ps99RapHistory.sourceUrl,
+        isCurrent: true,
+      });
     }
-
-    rawHistory = [...matched]
-      .sort((a, b) => a.createdAt - b.createdAt)
-      .map((drop) => ({ ...drop, source: 'discord', sourceUrl: null }));
-    historySource = 'wiadomości Discord — fallback';
-    sourceUrl = null;
   }
 
-  const priceHistory = [];
-  for (const point of rawHistory) {
-    const previous = priceHistory[priceHistory.length - 1];
-    if (!previous || previous.rap !== point.rap) priceHistory.push(point);
-  }
-
-  if (priceHistory.length === 0) {
+  if (chronologicalChanges.length === 0) {
     await interaction.editReply(`❌ Brak poprawnych danych RAP dla **${displayName}**.`);
     return;
   }
 
-  const oldestRap = priceHistory[0].rap;
-  const latestRap = priceHistory[priceHistory.length - 1].rap;
-  const allRaps = priceHistory.map((drop) => drop.rap);
+  const oldestRap = chronologicalChanges[0].rap;
+  const latestRap = chronologicalChanges[chronologicalChanges.length - 1].rap;
+  const allRaps = chronologicalChanges.map((point) => point.rap);
   const minRap = allRaps.reduce((min, value) => (value < min ? value : min), allRaps[0]);
   const maxRap = allRaps.reduce((max, value) => (value > max ? value : max), allRaps[0]);
+  const priceHistory = [...chronologicalChanges].reverse();
 
   const sessionId = createSessionId();
   const session = {
@@ -2025,20 +2047,15 @@ async function executePetValueCommand(interaction) {
     pageCount: Math.max(1, Math.ceil(priceHistory.length / HISTORY_PAGE_SIZE)),
     priceHistory,
     displayName,
-    account: isAllAccounts(accountRaw) ? 'wszystkie' : accountRaw,
-    channelLabel: selection.label,
-    dateLabel: dateFromRaw || dateToRaw
-      ? `${effectiveFrom.toFormat('dd.MM.yyyy')} – ${effectiveTo.toFormat('dd.MM.yyyy')}`
-      : 'cała historia dostępna w PS99RAP',
+    dateLabel,
     oldestRap,
     latestRap,
+    latestLabel: rangeIncludesToday ? 'Aktualny RAP' : 'RAP na końcu zakresu',
     change: latestRap - oldestRap,
     minRap,
     maxRap,
-    scanned: result.scanned,
-    thumbnail: matched.find((drop) => drop.thumbnail)?.thumbnail || null,
-    historySource,
-    sourceUrl,
+    thumbnail: null,
+    sourceUrl: ps99RapHistory.sourceUrl || currentPrice?.sourceUrl || null,
   };
 
   paginationSessions.set(sessionId, session);
