@@ -51,6 +51,27 @@ const ALERT_RAP_CENTER = BigInt(process.env.ALERT_RAP_CENTER || '4000000000');
 const ALERT_RAP_TOLERANCE = BigInt(process.env.ALERT_RAP_TOLERANCE || '100000000');
 const ALERT_MIN_RAP = BigInt(process.env.ALERT_MIN_RAP || '0');
 
+// Publiczne API PS99RAP. Bot korzysta z niego zamiast przepisywać cenę
+// z ostatniej wiadomości na Discordzie. Gdy API nie ma ceny lub chwilowo
+// nie odpowiada, bot automatycznie wraca do najnowszego RAP z kanału.
+const PS99RAP_ENABLED = !['0', 'false', 'off', 'no'].includes(
+  String(process.env.PS99RAP_ENABLED || 'true').toLowerCase(),
+);
+const PS99RAP_BASE_URL = String(process.env.PS99RAP_BASE_URL || 'https://ps99rap.com')
+  .replace(/\/+$/, '');
+const PS99RAP_CACHE_TTL_MS = Math.max(
+  60_000,
+  Number(process.env.PS99RAP_CACHE_TTL_MS || 120_000),
+);
+const PS99RAP_TIMEOUT_MS = Math.max(
+  3_000,
+  Number(process.env.PS99RAP_TIMEOUT_MS || 15_000),
+);
+const PS99RAP_BULK_CHUNK_SIZE = Math.max(
+  1,
+  Math.min(75, Number(process.env.PS99RAP_BULK_CHUNK_SIZE || 40)),
+);
+
 const DROP_CHANNELS = [
   {
     key: 'pawel',
@@ -148,7 +169,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName('petvalue')
-    .setDescription('Pokazuje zmianę RAP konkretnego peta w czasie')
+    .setDescription('Pokazuje historię RAP peta z PS99RAP')
     .addStringOption((option) => option
       .setName('nazwa')
       .setDescription('Zacznij wpisywać nazwę peta')
@@ -180,6 +201,7 @@ const commands = [
 const catalogByChannel = new Map();
 const paginationSessions = new Map();
 const dropFormSessions = new Map();
+const ps99RapPriceCache = new Map();
 let alertsReady = false;
 let schedulerStarted = false;
 
@@ -377,6 +399,223 @@ function normalizeAccount(value) {
     .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
     .trim()
     .toLowerCase();
+}
+
+function toPs99RapItemId(itemName) {
+  return String(itemName || '')
+    .normalize('NFKC')
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
+    .replace(/\u00A0/g, ' ')
+    .replace(/[`*_~|]/g, '')
+    .trim()
+    .replace(/\s+/g, '_');
+}
+
+function normalizePs99RapItemId(itemId) {
+  return normalizeItemName(String(itemId || '').replace(/_/g, ' '));
+}
+
+function buildPs99RapItemUrl(itemId) {
+  return `${PS99RAP_BASE_URL}/items/${encodeURIComponent(itemId)}`;
+}
+
+async function fetchJsonWithTimeout(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), PS99RAP_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'DropVault-Discord-Bot/2.1 (+PS99RAP credit)',
+      },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} ${response.statusText}`);
+    }
+
+    return await response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function unwrapApiData(payload) {
+  if (payload && typeof payload === 'object' && payload.data && typeof payload.data === 'object') {
+    return payload.data;
+  }
+  return payload;
+}
+
+function parsePs99RapTimestamp(raw) {
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return raw < 1_000_000_000_000 ? Math.round(raw * 1000) : Math.round(raw);
+  }
+
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  if (/^\d+(?:\.\d+)?$/.test(text)) {
+    const numeric = Number(text);
+    if (!Number.isFinite(numeric)) return null;
+    return numeric < 1_000_000_000_000 ? Math.round(numeric * 1000) : Math.round(numeric);
+  }
+
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getFreshPs99RapCache(itemKey) {
+  const cached = ps99RapPriceCache.get(itemKey);
+  if (!cached) return null;
+  if (Date.now() - cached.cachedAt > PS99RAP_CACHE_TTL_MS) {
+    ps99RapPriceCache.delete(itemKey);
+    return null;
+  }
+  return cached;
+}
+
+async function fetchPs99RapPrices(itemNames) {
+  const unique = new Map();
+  for (const itemName of itemNames) {
+    const itemKey = normalizeItemName(itemName);
+    if (!itemKey || unique.has(itemKey)) continue;
+    unique.set(itemKey, {
+      itemKey,
+      itemName,
+      itemId: toPs99RapItemId(itemName),
+    });
+  }
+
+  const prices = new Map();
+  const pending = [];
+  const errors = [];
+
+  for (const item of unique.values()) {
+    const cached = getFreshPs99RapCache(item.itemKey);
+    if (cached) {
+      if (cached.rap > 0n) prices.set(item.itemKey, cached);
+    } else {
+      pending.push(item);
+    }
+  }
+
+  if (!PS99RAP_ENABLED || pending.length === 0) {
+    return {
+      prices,
+      found: prices.size,
+      requested: unique.size,
+      missing: unique.size - prices.size,
+      errors,
+    };
+  }
+
+  for (let index = 0; index < pending.length; index += PS99RAP_BULK_CHUNK_SIZE) {
+    const chunk = pending.slice(index, index + PS99RAP_BULK_CHUNK_SIZE);
+    const url = new URL('/api/items/bulk', `${PS99RAP_BASE_URL}/`);
+    url.searchParams.set('ids', chunk.map((entry) => entry.itemId).join(','));
+
+    try {
+      const payload = unwrapApiData(await fetchJsonWithTimeout(url));
+      const responseObject = payload && typeof payload === 'object' ? payload : {};
+      const byNormalizedId = new Map(
+        Object.entries(responseObject).map(([id, value]) => [normalizePs99RapItemId(id), { id, value }]),
+      );
+
+      for (const item of chunk) {
+        const direct = responseObject[item.itemId];
+        const fallback = byNormalizedId.get(normalizePs99RapItemId(item.itemId));
+        const record = direct || fallback?.value || null;
+        const returnedId = direct ? item.itemId : fallback?.id || item.itemId;
+        const rap = parseRap(record?.rap);
+        const exists = record?.exists == null ? null : Number(record.exists);
+        const cacheEntry = {
+          item: item.itemName,
+          itemId: returnedId,
+          rap,
+          exists: Number.isFinite(exists) ? exists : null,
+          source: 'ps99rap',
+          sourceUrl: buildPs99RapItemUrl(returnedId),
+          fetchedAt: Date.now(),
+          cachedAt: Date.now(),
+        };
+
+        ps99RapPriceCache.set(item.itemKey, cacheEntry);
+        if (rap > 0n) prices.set(item.itemKey, cacheEntry);
+      }
+    } catch (error) {
+      errors.push(error);
+      console.error(`PS99RAP bulk API error (${chunk.length} items):`, error.message || error);
+    }
+  }
+
+  return {
+    prices,
+    found: prices.size,
+    requested: unique.size,
+    missing: unique.size - prices.size,
+    errors,
+  };
+}
+
+async function fetchPs99RapHistory(itemName) {
+  if (!PS99RAP_ENABLED) return { history: [], itemId: null, sourceUrl: null, error: null };
+
+  const itemId = toPs99RapItemId(itemName);
+  const url = new URL(`/api/item/${encodeURIComponent(itemId)}/rap_history`, `${PS99RAP_BASE_URL}/`);
+
+  try {
+    const payload = unwrapApiData(await fetchJsonWithTimeout(url));
+    const rows = Array.isArray(payload) ? payload : [];
+    const history = rows
+      .map((row) => {
+        if (!Array.isArray(row) || row.length < 2) return null;
+        const createdAt = parsePs99RapTimestamp(row[0]);
+        const rap = parseRap(row[1]);
+        if (!createdAt || rap <= 0n) return null;
+        return {
+          createdAt,
+          rap,
+          account: 'PS99RAP',
+          channelId: null,
+          source: 'ps99rap',
+          sourceUrl: buildPs99RapItemUrl(itemId),
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.createdAt - b.createdAt);
+
+    return {
+      history,
+      itemId,
+      sourceUrl: buildPs99RapItemUrl(itemId),
+      error: null,
+    };
+  } catch (error) {
+    console.error(`PS99RAP history API error (${itemName}):`, error.message || error);
+    return {
+      history: [],
+      itemId,
+      sourceUrl: buildPs99RapItemUrl(itemId),
+      error,
+    };
+  }
+}
+
+function formatRapSource(drop) {
+  if (drop?.rapSource === 'ps99rap') {
+    return drop.rapSourceUrl
+      ? ` • cena: [PS99RAP](${drop.rapSourceUrl})`
+      : ' • cena: PS99RAP';
+  }
+
+  if (drop?.rapSourceCreatedAt) {
+    return ` • cena RAP z ${formatDateTime(drop.rapSourceCreatedAt)}`;
+  }
+
+  return '';
 }
 
 function detectVariant(itemName) {
@@ -738,45 +977,86 @@ async function fetchLatestRapsFromChannels(channelIds, wantedItemKeys) {
   };
 }
 
-function applyLatestRaps(drops, latestRaps) {
+function applyLatestRaps(drops, priceMap) {
   return drops.map((drop) => {
-    const latest = latestRaps.get(normalizeItemName(drop.item));
+    const latest = priceMap.get(normalizeItemName(drop.item));
 
     if (!latest) {
       return {
         ...drop,
         originalRap: drop.rap,
+        rapSource: 'discord',
         rapSourceCreatedAt: drop.createdAt,
         rapSourceChannelId: drop.channelId,
+        rapSourceFetchedAt: null,
+        rapSourceUrl: null,
       };
     }
 
+    const source = latest.source || 'discord';
     return {
       ...drop,
       originalRap: drop.rap,
       rap: latest.rap,
-      rapSourceCreatedAt: latest.createdAt,
-      rapSourceChannelId: latest.channelId,
+      exists: latest.exists ?? null,
+      rapSource: source,
+      rapSourceCreatedAt: source === 'ps99rap' ? null : latest.createdAt,
+      rapSourceChannelId: source === 'ps99rap' ? null : latest.channelId,
+      rapSourceFetchedAt: source === 'ps99rap' ? latest.fetchedAt : null,
+      rapSourceUrl: latest.sourceUrl || null,
     };
   });
 }
 
 async function repriceDrops(drops, allFetchedDrops, channelIds) {
-  const wantedItemKeys = new Set(drops.map((drop) => normalizeItemName(drop.item)));
-  const latestRapsInSelectedRange = buildLatestRapMap(allFetchedDrops, wantedItemKeys);
-  const latestRapResult = await fetchLatestRapsFromChannels(channelIds, wantedItemKeys);
-  const finalLatestRaps = mergeLatestRapMaps(
-    latestRapsInSelectedRange,
-    latestRapResult.latestRaps,
+  const itemNamesByKey = new Map();
+  for (const drop of drops) {
+    const key = normalizeItemName(drop.item);
+    if (key && !itemNamesByKey.has(key)) itemNamesByKey.set(key, drop.item);
+  }
+
+  const wantedItemKeys = new Set(itemNamesByKey.keys());
+  const ps99RapResult = await fetchPs99RapPrices([...itemNamesByKey.values()]);
+  const finalPrices = new Map(ps99RapResult.prices);
+  const missingItemKeys = new Set(
+    [...wantedItemKeys].filter((itemKey) => !finalPrices.has(itemKey)),
   );
 
+  let fallbackScanned = 0;
+  let fallbackHitLimit = false;
+  let fallbackFound = 0;
+
+  if (missingItemKeys.size > 0) {
+    const latestRapsInSelectedRange = buildLatestRapMap(allFetchedDrops, missingItemKeys);
+    const latestRapResult = await fetchLatestRapsFromChannels(channelIds, missingItemKeys);
+    const fallbackPrices = mergeLatestRapMaps(
+      latestRapsInSelectedRange,
+      latestRapResult.latestRaps,
+    );
+
+    for (const [itemKey, candidate] of fallbackPrices) {
+      if (finalPrices.has(itemKey)) continue;
+      finalPrices.set(itemKey, {
+        ...candidate,
+        source: 'discord',
+      });
+    }
+
+    fallbackScanned = latestRapResult.scanned;
+    fallbackHitLimit = latestRapResult.hitLimit;
+    fallbackFound = fallbackPrices.size;
+  }
+
   return {
-    drops: applyLatestRaps(drops, finalLatestRaps),
-    latestRaps: finalLatestRaps,
-    scanned: latestRapResult.scanned,
-    hitLimit: latestRapResult.hitLimit,
+    drops: applyLatestRaps(drops, finalPrices),
+    latestRaps: finalPrices,
+    scanned: fallbackScanned,
+    hitLimit: fallbackHitLimit,
     pricingWanted: wantedItemKeys.size,
-    pricingFound: finalLatestRaps.size,
+    pricingFound: finalPrices.size,
+    pricingFromPs99Rap: ps99RapResult.prices.size,
+    pricingFallback: fallbackFound,
+    ps99RapErrors: ps99RapResult.errors.length,
   };
 }
 
@@ -821,6 +1101,9 @@ function buildDropPageEmbed(session, page) {
     channelsScanned,
     pricingFound,
     pricingWanted,
+    pricingFromPs99Rap,
+    pricingFallback,
+    ps99RapErrors,
   } = session;
 
   const bestDropsSorted = [...drops].sort(compareByRap);
@@ -836,12 +1119,10 @@ function buildDropPageEmbed(session, page) {
   const bestDrops = bestDropsSorted
     .slice(start, start + HISTORY_PAGE_SIZE)
     .map((drop, index) => {
-      const priceDate = drop.rapSourceCreatedAt
-        ? ` • cena RAP z ${formatDateTime(drop.rapSourceCreatedAt)}`
-        : '';
+      const priceSource = formatRapSource(drop);
 
       return `${start + index + 1}. **${drop.item}**\n`
-        + `   RAP: \`${formatBigInt(drop.rap)}\` • konto: \`${drop.account}\` • drop: ${formatDateTime(drop.createdAt)}${priceDate}`;
+        + `   RAP: \`${formatBigInt(drop.rap)}\` • konto: \`${drop.account}\` • drop: ${formatDateTime(drop.createdAt)}${priceSource}`;
     })
     .join('\n') || 'Brak na tej stronie';
 
@@ -856,7 +1137,7 @@ function buildDropPageEmbed(session, page) {
       + `**Okres:** ${from.toFormat('dd.MM.yyyy HH:mm')} – ${to.toFormat('dd.MM.yyyy HH:mm')}\n`
       + '**Podział petów:** Gargantuan > Titanic > Huge, następnie wariant\n'
       + '**Najlepsze dropy:** wyłącznie według RAP, od największego\n'
-      + '**Wycena:** najnowszy zapisany RAP tego samego peta',
+      + '**Wycena:** aktualny RAP z PS99RAP; gdy brak ceny — najnowszy RAP z kanału',
     )
     .addFields(
       { name: '🎁 Liczba dropów', value: `\`${drops.length}\``, inline: true },
@@ -864,14 +1145,16 @@ function buildDropPageEmbed(session, page) {
       { name: '🔎 Wiadomości', value: `\`${scanned}\``, inline: true },
       { name: '📡 Kanały', value: `\`${channelsScanned}\``, inline: true },
       { name: '💹 Ceny znalezione', value: `\`${pricingFound}/${pricingWanted}\``, inline: true },
+      { name: '🌐 PS99RAP', value: `\`${pricingFromPs99Rap}/${pricingWanted}\``, inline: true },
+      { name: '↩️ Fallback z kanału', value: `\`${pricingFallback}\``, inline: true },
       { name: '🔄 Przeliczone', value: `\`${repricedCount}\``, inline: true },
       { name: '🐾 Podział petów', value: truncate(itemSummary) },
       { name: '🏆 Najlepsze dropy', value: truncate(bestDrops) },
     )
     .setFooter({
       text: hitLimit
-        ? `Strona ${page + 1}. Osiągnięto limit ${MAX_MESSAGES} wiadomości.`
-        : `Strona ${page + 1} • DropVault`,
+        ? `Strona ${page + 1}. Osiągnięto limit ${MAX_MESSAGES} wiadomości. • RAP: ps99rap.com`
+        : `Strona ${page + 1} • RAP: ps99rap.com${ps99RapErrors ? ' • API fallback aktywny' : ''}`,
     })
     .setTimestamp();
 
@@ -886,13 +1169,11 @@ function buildPetPageEmbed(session, page) {
 
   const history = pageDrops.map((drop, index) => {
     const sourceChannel = getChannelLabelById(drop.channelId);
-    const priceDate = drop.rapSourceCreatedAt
-      ? ` • cena RAP z ${formatDateTime(drop.rapSourceCreatedAt)}`
-      : '';
+    const priceSource = formatRapSource(drop);
 
     return `${start + index + 1}. **${drop.item}**\n`
       + `   ${formatDateTime(drop.createdAt)} • \`${drop.account}\` • ${sourceChannel}\n`
-      + `   RAP: \`${formatBigInt(drop.rap)}\`${priceDate}`;
+      + `   RAP: \`${formatBigInt(drop.rap)}\`${priceSource}`;
   }).join('\n') || 'Brak';
 
   const embed = new EmbedBuilder()
@@ -904,7 +1185,7 @@ function buildPetPageEmbed(session, page) {
       + `**Wariant:** ${variantLabel(session.variant)}\n`
       + `**Zakres:** ${session.dateLabel}\n`
       + `**Dopasowanie:** ${session.exactMatch ? 'dokładna nazwa' : 'część nazwy'}\n`
-      + '**Aktualny RAP:** z najnowszego zapisanego dropu tego samego peta',
+      + '**Aktualny RAP:** z PS99RAP; gdy brak ceny — z najnowszego dropu',
     )
     .addFields(
       { name: '📦 Liczba dropów', value: `\`${session.drops.length}\``, inline: true },
@@ -919,8 +1200,8 @@ function buildPetPageEmbed(session, page) {
     )
     .setFooter({
       text: session.hitLimit
-        ? `Strona ${page + 1}. Osiągnięto limit ${MAX_MESSAGES} wiadomości.`
-        : `Strona ${page + 1} • sprawdzono ${session.scanned} wiadomości`,
+        ? `Strona ${page + 1}. Osiągnięto limit ${MAX_MESSAGES} wiadomości. • RAP: ps99rap.com`
+        : `Strona ${page + 1} • sprawdzono ${session.scanned} wiadomości • RAP: ps99rap.com`,
     })
     .setTimestamp();
 
@@ -937,10 +1218,13 @@ function buildPetValuePageEmbed(session, page) {
     const previous = session.priceHistory[start + index - 1];
     const delta = previous ? drop.rap - previous.rap : 0n;
     const deltaText = previous ? ` • zmiana: \`${formatSignedBigInt(delta)}\`` : '';
+    const sourceText = drop.source === 'ps99rap'
+      ? `[PS99RAP](${drop.sourceUrl || session.sourceUrl})`
+      : `konto: \`${drop.account}\` • ${getChannelLabelById(drop.channelId)}`;
 
     return `${start + index + 1}. **${formatDateTime(drop.createdAt)}**\n`
       + `   RAP: \`${formatBigInt(drop.rap)}\`${deltaText}\n`
-      + `   konto: \`${drop.account}\` • ${getChannelLabelById(drop.channelId)}`;
+      + `   źródło: ${sourceText}`;
   }).join('\n') || 'Brak';
 
   const percentText = session.oldestRap > 0n
@@ -951,7 +1235,8 @@ function buildPetValuePageEmbed(session, page) {
     .setTitle(`💹 Zmiana RAP: ${session.displayName}`)
     .setColor(session.change >= 0n ? 0x57f287 : 0xed4245)
     .setDescription(
-      `**Kanał:** ${session.channelLabel}\n`
+      `**Źródło historii:** ${session.historySource}\n`
+      + `**Kanał dropów:** ${session.channelLabel}\n`
       + `**Konto:** \`${session.account}\`\n`
       + `**Zakres:** ${session.dateLabel}\n`
       + `**Pierwszy RAP:** \`${formatBigInt(session.oldestRap)}\`\n`
@@ -964,9 +1249,14 @@ function buildPetValuePageEmbed(session, page) {
       { name: '🧾 Zapisów ceny', value: `\`${session.priceHistory.length}\``, inline: true },
       { name: '📜 Historia cen', value: truncate(history) },
     )
-    .setFooter({ text: `Strona ${page + 1} • sprawdzono ${session.scanned} wiadomości` })
+    .setFooter({
+      text: session.historySource === 'PS99RAP'
+        ? 'Historia RAP: ps99rap.com'
+        : `Fallback z wiadomości • sprawdzono ${session.scanned} wiadomości`,
+    })
     .setTimestamp();
 
+  if (session.sourceUrl) embed.setURL(session.sourceUrl);
   if (session.thumbnail) embed.setThumbnail(session.thumbnail);
   return embed;
 }
@@ -1147,7 +1437,7 @@ function buildDailyReportEmbeds(channelConfig, reportDate, drops, metadata) {
     .setColor(channelConfig.color)
     .setDescription(
       `**Data:** ${reportDate.toFormat('dd.MM.yyyy')}\n`
-      + '**Wycena:** najnowszy dostępny RAP danego peta\n'
+      + '**Wycena:** aktualny RAP z PS99RAP; gdy brak ceny — fallback z kanału\n'
       + `**Strefa czasowa:** ${TIME_ZONE}`,
     )
     .addFields(
@@ -1177,8 +1467,22 @@ function buildDailyReportEmbeds(channelConfig, reportDate, drops, metadata) {
         value: `\`${metadata.scanned}\``,
         inline: true,
       },
+      {
+        name: '🌐 Ceny PS99RAP',
+        value: `\`${metadata.pricingFromPs99Rap || 0}/${metadata.pricingWanted || 0}\``,
+        inline: true,
+      },
+      {
+        name: '↩️ Fallback z kanału',
+        value: `\`${metadata.pricingFallback || 0}\``,
+        inline: true,
+      },
     )
-    .setFooter({ text: metadata.hitLimit ? `Osiągnięto limit ${MAX_MESSAGES} wiadomości.` : 'Automatyczny raport 23:59' })
+    .setFooter({
+      text: metadata.hitLimit
+        ? `Osiągnięto limit ${MAX_MESSAGES} wiadomości. • RAP: ps99rap.com`
+        : 'Automatyczny raport 23:59 • RAP: ps99rap.com',
+    })
     .setTimestamp();
 
   if (bestDrop?.thumbnail) summary.setThumbnail(bestDrop.thumbnail);
@@ -1232,6 +1536,9 @@ async function sendDailyReport(channelConfig, reportDate) {
   const embeds = buildDailyReportEmbeds(channelConfig, reportDate, repriced.drops, {
     scanned: result.scanned + repriced.scanned,
     hitLimit: result.hitLimit || repriced.hitLimit,
+    pricingFromPs99Rap: repriced.pricingFromPs99Rap,
+    pricingWanted: repriced.pricingWanted,
+    pricingFallback: repriced.pricingFallback,
   });
 
   await sendEmbedsInBatches(targetChannel, embeds);
@@ -1348,9 +1655,14 @@ async function sendDropAlert(channelConfig, drop, reasons, recordReasons) {
       + `RAP: \`${formatBigInt(drop.rap)}\`\n`
       + `Konto: \`${drop.account}\`\n`
       + `Kanał: ${channelConfig.emoji} **${channelConfig.label}**\n`
-      + `Data: ${formatDateTime(drop.createdAt)}`,
+      + `Data: ${formatDateTime(drop.createdAt)}
+`
+      + `Źródło ceny: ${drop.rapSource === 'ps99rap' && drop.rapSourceUrl
+        ? `[PS99RAP](${drop.rapSourceUrl})`
+        : 'wiadomość z kanału'}`,
     )
     .addFields({ name: 'Powód alertu', value: allReasons.map((reason) => `• ${reason}`).join('\n') })
+    .setFooter({ text: 'RAP: ps99rap.com' })
     .setTimestamp();
 
   if (drop.thumbnail) embed.setThumbnail(drop.thumbnail);
@@ -1368,14 +1680,28 @@ async function processNewDrop(drop) {
   if (!channelConfig) return;
 
   updateCatalog(drop);
-  const recordReasons = updateRecords(channelConfig.key, drop, alertsReady);
-  const specialReasons = getSpecialAlertReasons(drop);
+
+  const ps99RapResult = await fetchPs99RapPrices([drop.item]);
+  const ps99RapPrice = ps99RapResult.prices.get(normalizeItemName(drop.item));
+  const pricedDrop = ps99RapPrice
+    ? applyLatestRaps([drop], new Map([[normalizeItemName(drop.item), ps99RapPrice]]))[0]
+    : {
+      ...drop,
+      originalRap: drop.rap,
+      rapSource: 'discord',
+      rapSourceCreatedAt: drop.createdAt,
+      rapSourceChannelId: drop.channelId,
+      rapSourceUrl: null,
+    };
+
+  const recordReasons = updateRecords(channelConfig.key, pricedDrop, alertsReady);
+  const specialReasons = getSpecialAlertReasons(pricedDrop);
   saveState();
 
   if (!alertsReady) return;
   if (specialReasons.length === 0 && recordReasons.length === 0) return;
 
-  await sendDropAlert(channelConfig, drop, specialReasons, recordReasons);
+  await sendDropAlert(channelConfig, pricedDrop, specialReasons, recordReasons);
 }
 
 // ============================================================
@@ -1389,12 +1715,14 @@ async function warmCatalogAndRecords() {
   for (const channelConfig of DROP_CHANNELS) {
     try {
       const result = await fetchDropsFromChannels([channelConfig.id], from, to);
+      const repriced = await repriceDrops(result.drops, result.drops, [channelConfig.id]);
       if (!state.records[channelConfig.key]) state.records[channelConfig.key] = defaultRecordState();
-      const chronological = [...result.drops].sort((a, b) => a.createdAt - b.createdAt);
+      const chronological = [...repriced.drops].sort((a, b) => a.createdAt - b.createdAt);
       for (const drop of chronological) updateRecords(channelConfig.key, drop, false);
 
       console.log(
-        `Cache ${channelConfig.label}: ${result.drops.length} dropów, ${result.scanned} wiadomości.`,
+        `Cache ${channelConfig.label}: ${result.drops.length} dropów, ${result.scanned} wiadomości, `
+        + `${repriced.pricingFromPs99Rap}/${repriced.pricingWanted} cen z PS99RAP.`,
       );
     } catch (error) {
       console.error(`Nie udało się zbudować cache ${channelConfig.label}:`, error);
@@ -1528,19 +1856,26 @@ async function executePetCommand(interaction) {
       item: drop.item,
       count: 0,
       currentRap: drop.rap,
-      latestPriceAt: drop.rapSourceCreatedAt,
+      rapSource: drop.rapSource,
+      rapSourceCreatedAt: drop.rapSourceCreatedAt,
+      rapSourceUrl: drop.rapSourceUrl,
     };
     current.count += 1;
-    if ((drop.rapSourceCreatedAt || 0) >= (current.latestPriceAt || 0)) {
-      current.currentRap = drop.rap;
-      current.latestPriceAt = drop.rapSourceCreatedAt;
-    }
+    current.currentRap = drop.rap;
+    current.rapSource = drop.rapSource;
+    current.rapSourceCreatedAt = drop.rapSourceCreatedAt;
+    current.rapSourceUrl = drop.rapSourceUrl;
     grouped.set(key, current);
   }
 
   const matchedPetsText = [...grouped.values()]
     .sort((a, b) => getVariantRank(b.item) - getVariantRank(a.item))
-    .map((pet) => `• **${pet.item}** — ${pet.count}x\n  RAP: \`${formatBigInt(pet.currentRap)}\` • cena z ${formatDateTime(pet.latestPriceAt)}`)
+    .map((pet) => {
+      const sourceText = pet.rapSource === 'ps99rap'
+        ? (pet.rapSourceUrl ? `[PS99RAP](${pet.rapSourceUrl})` : 'PS99RAP')
+        : `cena z ${formatDateTime(pet.rapSourceCreatedAt)}`;
+      return `• **${pet.item}** — ${pet.count}x\n  RAP: \`${formatBigInt(pet.currentRap)}\` • ${sourceText}`;
+    })
     .join('\n');
 
   const sessionId = createSessionId();
@@ -1607,37 +1942,72 @@ async function executePetValueCommand(interaction) {
     return;
   }
 
-  const result = await fetchDropsFromChannels(selection.ids, effectiveFrom.toMillis(), effectiveTo.toMillis());
+  const result = await fetchDropsFromChannels(
+    selection.ids,
+    effectiveFrom.toMillis(),
+    effectiveTo.toMillis(),
+  );
   const accountFiltered = result.drops.filter((drop) => accountMatches(drop.account, accountRaw));
   const exact = accountFiltered.filter((drop) => normalizeItemName(drop.item) === query);
   const partial = accountFiltered.filter((drop) => normalizeItemName(drop.item).includes(query));
-  let matched = exact;
 
-  if (matched.length === 0) {
-    const partialNames = new Map();
-    for (const drop of partial) partialNames.set(normalizeItemName(drop.item), drop.item);
+  const partialNames = new Map();
+  for (const drop of partial) partialNames.set(normalizeItemName(drop.item), drop.item);
 
-    if (partialNames.size > 1) {
-      const examples = [...partialNames.values()].slice(0, 8).map((name) => `• ${name}`).join('\n');
+  if (exact.length === 0 && partialNames.size > 1) {
+    const examples = [...partialNames.values()].slice(0, 8).map((name) => `• ${name}`).join('\n');
+    await interaction.editReply(
+      `❌ Ta część nazwy pasuje do kilku petów. Wybierz pełną nazwę z autouzupełniania:\n${examples}`,
+    );
+    return;
+  }
+
+  const matched = exact.length > 0
+    ? exact
+    : partialNames.size === 1
+      ? partial.filter((drop) => normalizeItemName(drop.item) === [...partialNames.keys()][0])
+      : [];
+  const displayName = exact[0]?.item || [...partialNames.values()][0] || queryRaw;
+
+  const ps99RapHistory = await fetchPs99RapHistory(displayName);
+  let rawHistory = ps99RapHistory.history.filter((point) => (
+    point.createdAt >= effectiveFrom.toMillis()
+    && point.createdAt <= effectiveTo.toMillis()
+  ));
+  let historySource = 'PS99RAP';
+  let sourceUrl = ps99RapHistory.sourceUrl;
+
+  if (rawHistory.length === 0 && ps99RapHistory.history.length > 0) {
+    await interaction.editReply(
+      `❌ PS99RAP nie ma punktów cenowych dla **${displayName}** w wybranym zakresie dat.`,
+    );
+    return;
+  }
+
+  if (rawHistory.length === 0) {
+    if (matched.length === 0) {
       await interaction.editReply(
-        `❌ Ta część nazwy pasuje do kilku petów. Wybierz pełną nazwę z autouzupełniania:\n${examples}`,
+        `❌ Nie znaleziono historii peta \`${queryRaw}\` ani w PS99RAP, ani na wybranym kanale.`,
       );
       return;
     }
 
-    matched = partial;
+    rawHistory = [...matched]
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .map((drop) => ({ ...drop, source: 'discord', sourceUrl: null }));
+    historySource = 'wiadomości Discord — fallback';
+    sourceUrl = null;
   }
 
-  if (matched.length === 0) {
-    await interaction.editReply(`❌ Nie znaleziono peta pasującego do \`${queryRaw}\`.`);
-    return;
-  }
-
-  const sorted = [...matched].sort((a, b) => a.createdAt - b.createdAt);
   const priceHistory = [];
-  for (const drop of sorted) {
+  for (const point of rawHistory) {
     const previous = priceHistory[priceHistory.length - 1];
-    if (!previous || previous.rap !== drop.rap) priceHistory.push(drop);
+    if (!previous || previous.rap !== point.rap) priceHistory.push(point);
+  }
+
+  if (priceHistory.length === 0) {
+    await interaction.editReply(`❌ Brak poprawnych danych RAP dla **${displayName}**.`);
+    return;
   }
 
   const oldestRap = priceHistory[0].rap;
@@ -1654,12 +2024,12 @@ async function executePetValueCommand(interaction) {
     createdAt: Date.now(),
     pageCount: Math.max(1, Math.ceil(priceHistory.length / HISTORY_PAGE_SIZE)),
     priceHistory,
-    displayName: exact[0]?.item || matched[0].item,
+    displayName,
     account: isAllAccounts(accountRaw) ? 'wszystkie' : accountRaw,
     channelLabel: selection.label,
     dateLabel: dateFromRaw || dateToRaw
       ? `${effectiveFrom.toFormat('dd.MM.yyyy')} – ${effectiveTo.toFormat('dd.MM.yyyy')}`
-      : 'cała dostępna historia',
+      : 'cała historia dostępna w PS99RAP',
     oldestRap,
     latestRap,
     change: latestRap - oldestRap,
@@ -1667,6 +2037,8 @@ async function executePetValueCommand(interaction) {
     maxRap,
     scanned: result.scanned,
     thumbnail: matched.find((drop) => drop.thumbnail)?.thumbnail || null,
+    historySource,
+    sourceUrl,
   };
 
   paginationSessions.set(sessionId, session);
@@ -1691,7 +2063,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   startScheduler();
   await warmCatalogAndRecords();
   alertsReady = true;
-  console.log('DropVault jest gotowy: alerty, rekordy, raport 23:59 i autocomplete aktywne.');
+  console.log('DropVault jest gotowy: PS99RAP, alerty, rekordy, raport 23:59 i autocomplete aktywne.');
 });
 
 client.on(Events.MessageCreate, async (message) => {
@@ -1978,6 +2350,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         channelsScanned: result.channelsScanned,
         pricingFound: repriced.pricingFound,
         pricingWanted: repriced.pricingWanted,
+        pricingFromPs99Rap: repriced.pricingFromPs99Rap,
+        pricingFallback: repriced.pricingFallback,
+        ps99RapErrors: repriced.ps99RapErrors,
       };
 
       paginationSessions.set(paginationId, pagination);
