@@ -1,10 +1,15 @@
-# DropVault Bot 2.5 — formularze w oknach Discorda
+# DropVault Bot 2.7 — wybór kont Roblox z listy
 
 Bot analizuje dropy Huge, Titanic i Gargantuan z dwóch oddzielnych kanałów oraz pobiera aktualny RAP z PS99RAP.
 
 ## Najważniejsza zmiana
 
-Po wpisaniu komendy bot otwiera jedno okno formularza podobne do formularza ze screena. W oknie są listy wyboru oraz pola tekstowe.
+Przy komendach `/drop`, `/today` i `/pet` nie trzeba już ręcznie wpisywać nicku konta Roblox. Najpierw ustawiasz filtry w formularzu, a po zatwierdzeniu bot automatycznie pokazuje listę nicków wykrytych na wybranym kanale.
+
+- lista kont jest pobierana oddzielnie z kanału Pawła, Ryzena albo z obu kanałów,
+- zawsze dostępna jest opcja **Wszystkie konta**,
+- przy ponad 24 kontach pojawiają się przyciski **Poprzednie konta** i **Następne konta**,
+- wybrany nick jest używany jako filtr bez ręcznego wpisywania.
 
 ### `/drop`
 
@@ -13,16 +18,16 @@ Formularz zawiera:
 - kanał: 🟢 Dropy Paweł / 🔵 Dropy Ryzen / oba,
 - rodzaj: Huge / Titanic / Gargantuan / wszystkie,
 - wariant: Normal / Golden / Rainbow / Shiny / Shiny Golden / Shiny Rainbow,
-- konto Roblox — puste oznacza wszystkie,
+- po zatwierdzeniu formularza: lista wykrytych kont Roblox,
 - zakres dat i godzin w formacie `DD.MM.RRRR GG:MM - DD.MM.RRRR GG:MM`.
 
 ### `/today`
 
-Formularz zawiera kanał, rodzaj, wariant i konto. Bot liczy od dzisiejszej godziny `00:00` do chwili użycia komendy.
+Formularz zawiera kanał, rodzaj i wariant. Po zatwierdzeniu wybierasz konto z automatycznej listy. Bot liczy od dzisiejszej godziny `00:00` do chwili użycia komendy.
 
 ### `/pet`
 
-Formularz zawiera nazwę peta, kanał, konto, wariant oraz opcjonalny zakres dat `DD.MM.RRRR - DD.MM.RRRR`.
+Formularz zawiera nazwę peta, kanał, wariant oraz opcjonalny zakres dat `DD.MM.RRRR - DD.MM.RRRR`. Po zatwierdzeniu wybierasz konto z automatycznej listy.
 
 ### `/petvalue`
 
@@ -108,6 +113,6 @@ Po każdym uruchomieniu bot publikuje albo aktualizuje jeden embed z linkami:
 - Paweł: kanał `1525508811039969480` — 5 serwerów,
 - Ryzen: kanał `1525508845324075179` — 4 serwery.
 
-Każdy serwer ma przycisk **Serwer 1/2/...** oraz adres w formatowaniu kodu, dzięki czemu link można łatwo otworzyć albo skopiować. Bot zapamiętuje ID wiadomości i edytuje istniejący panel zamiast wysyłać duplikat przy każdym restarcie.
+Każdy serwer ma przycisk **Serwer 1/2/...** oraz osobny blok kodu z ikoną kopiowania po prawej stronie, dzięki czemu cały link można skopiować jednym kliknięciem. Bot zapamiętuje ID wiadomości i edytuje istniejący panel zamiast wysyłać duplikat przy każdym restarcie.
 
 Bot potrzebuje na obu kanałach uprawnień: **View Channel**, **Send Messages**, **Embed Links** i **Read Message History**.

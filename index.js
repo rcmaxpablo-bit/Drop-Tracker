@@ -461,13 +461,6 @@ function buildDropFormModal(userId) {
         makeStringSelect('form_variant', 'Wybierz wariant', PET_VARIANT_OPTIONS, 'all'),
       ),
       makeTextLabel(
-        'KONTO ROBLOX',
-        'Wpisz nick albo zostaw puste, aby policzyć wszystkie konta.',
-        'form_account',
-        'np. ps99_alts23 lub wszystkie',
-        { required: false, maxLength: 100 },
-      ),
-      makeTextLabel(
         'DATA I GODZINA',
         'Format: DD.MM.RRRR GG:MM - DD.MM.RRRR GG:MM',
         'form_range',
@@ -497,13 +490,6 @@ function buildTodayFormModal(userId) {
         'Domyślnie bot policzy wszystkie warianty.',
         makeStringSelect('form_variant', 'Wybierz wariant', PET_VARIANT_OPTIONS, 'all'),
       ),
-      makeTextLabel(
-        'KONTO ROBLOX',
-        'Wpisz nick albo zostaw puste, aby policzyć wszystkie konta.',
-        'form_account',
-        'np. ps99_alts23 lub wszystkie',
-        { required: false, maxLength: 100 },
-      ),
     );
 }
 
@@ -523,13 +509,6 @@ function buildPetFormModal(userId) {
         'KANAŁ DROPÓW',
         'Wybierz kanał, na którym bot ma szukać.',
         makeStringSelect('form_channel', 'Wybierz kanał', modalChannelOptions(true), 'pawel'),
-      ),
-      makeTextLabel(
-        'KONTO ROBLOX',
-        'Wpisz nick albo zostaw puste, aby sprawdzić wszystkie konta.',
-        'form_account',
-        'np. ps99_alts23 lub wszystkie',
-        { required: false, maxLength: 100 },
       ),
       makeSelectLabel(
         'WARIANT',
@@ -1797,6 +1776,124 @@ function buildDropAccountComponents(session) {
   return components;
 }
 
+
+function buildAccountPickerComponents(session) {
+  const pageCount = Math.max(1, Math.ceil(session.accounts.length / ACCOUNT_PAGE_SIZE));
+  session.accountPage = Math.max(0, Math.min(session.accountPage || 0, pageCount - 1));
+
+  const start = session.accountPage * ACCOUNT_PAGE_SIZE;
+  const accounts = session.accounts.slice(start, start + ACCOUNT_PAGE_SIZE);
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(`account_pick:${session.id}`)
+    .setPlaceholder('Wybierz konto Roblox')
+    .addOptions(
+      new StringSelectMenuOptionBuilder()
+        .setLabel('Wszystkie konta')
+        .setDescription('Nie filtruj wyników po nicku')
+        .setValue('__all__')
+        .setEmoji('👥'),
+      ...accounts.map((account) => new StringSelectMenuOptionBuilder()
+        .setLabel(account.slice(0, 100))
+        .setValue(account.slice(0, 100))
+        .setEmoji('👤')),
+    );
+
+  const components = [new ActionRowBuilder().addComponents(menu)];
+
+  if (pageCount > 1) {
+    components.push(new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`account_pick_page:${session.id}:prev`)
+        .setLabel('Poprzednie konta')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(session.accountPage <= 0),
+      new ButtonBuilder()
+        .setCustomId(`account_pick_page:${session.id}:noop`)
+        .setLabel(`${session.accountPage + 1}/${pageCount}`)
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(true),
+      new ButtonBuilder()
+        .setCustomId(`account_pick_page:${session.id}:next`)
+        .setLabel('Następne konta')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(session.accountPage >= pageCount - 1),
+    ));
+  }
+
+  return components;
+}
+
+async function ensureAccountsLoaded(channelKey) {
+  const selection = getChannelSelection(channelKey);
+  if (!selection) return { selection: null, accounts: [] };
+
+  let catalog = getCombinedCatalog(channelKey);
+  if (catalog.accounts.size === 0) {
+    const fallbackFrom = DateTime.fromISO('2015-01-01', { zone: TIME_ZONE }).startOf('day');
+    const fallbackTo = DateTime.now().setZone(TIME_ZONE).endOf('day');
+    await fetchDropsFromChannels(selection.ids, fallbackFrom.toMillis(), fallbackTo.toMillis());
+    catalog = getCombinedCatalog(channelKey);
+  }
+
+  const accounts = [...catalog.accounts.values()]
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b, 'pl', { sensitivity: 'base' }));
+
+  return { selection, accounts };
+}
+
+function accountPickerSummary(action, params, selection) {
+  const lines = [`Kanał: **${selection.label}**`];
+  if (action === 'drop' || action === 'today') {
+    lines.push(`Typ: **${typeLabel(params.type)}**`);
+    lines.push(`Wariant: **${variantLabel(params.variant)}**`);
+  }
+  if (action === 'drop') lines.push(`Zakres: **${params.rangeRaw}**`);
+  if (action === 'pet') {
+    lines.push(`Pet: **${params.queryRaw}**`);
+    lines.push(`Wariant: **${variantLabel(params.variant)}**`);
+  }
+  lines.push('', 'Wybierz konto Roblox z listy:');
+  return lines.join('\n');
+}
+
+async function startAccountPicker(interaction, action, params) {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const { selection, accounts } = await ensureAccountsLoaded(params.channelKey);
+  if (!selection) {
+    await interaction.editReply('❌ Nie znaleziono wybranego kanału.');
+    return;
+  }
+
+  const sessionId = createSessionId();
+  const session = {
+    id: sessionId,
+    ownerId: interaction.user.id,
+    createdAt: Date.now(),
+    action,
+    params,
+    accounts,
+    accountPage: 0,
+  };
+  dropFormSessions.set(sessionId, session);
+
+  await interaction.editReply({
+    content: accountPickerSummary(action, params, selection),
+    components: buildAccountPickerComponents(session),
+  });
+}
+
+async function prepareResultInteraction(interaction) {
+  if (interaction.deferred || interaction.replied) return;
+  if (interaction.isMessageComponent()) {
+    await interaction.deferUpdate();
+  } else {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  }
+}
+
 function buildDropDateModal(session) {
   const today = DateTime.now().setZone(TIME_ZONE).toFormat('dd.MM.yyyy');
   const modal = new ModalBuilder()
@@ -2277,7 +2374,7 @@ async function registerCommands() {
 }
 
 async function executeTodayCommand(interaction, params = null) {
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await prepareResultInteraction(interaction);
 
   const channelKey = params?.channelKey ?? interaction.options.getString('kanal', true);
   const account = (params?.account ?? interaction.options.getString('konto') ?? '').trim() || 'wszystkie';
@@ -2364,7 +2461,7 @@ async function executeTodayCommand(interaction, params = null) {
 
 
 async function executeDropForm(interaction, params) {
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await prepareResultInteraction(interaction);
 
   const range = splitDateTimeRange(params.rangeRaw);
   if (!range) {
@@ -2506,7 +2603,7 @@ async function executeWebhookUrlCommand(interaction, params = null) {
 }
 
 async function executePetCommand(interaction, params = null) {
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await prepareResultInteraction(interaction);
 
   const queryRaw = (params?.queryRaw ?? interaction.options.getString('nazwa', true)).trim();
   const channelKey = params?.channelKey ?? interaction.options.getString('kanal', true);
@@ -3030,18 +3127,18 @@ startRelayServer();
 // ============================================================
 
 function buildServerPanelPayload(panel) {
+  // Linki są wysyłane jako osobne bloki kodu w treści wiadomości.
+  // Discord pokazuje przy takim bloku ikonę kopiowania, tak jak na screenie użytkownika.
+  const copyBlocks = panel.links
+    .map((url, index) => `**Serwer ${index + 1}**\n\`\`\`text\n${url}\n\`\`\``)
+    .join('\n\n');
+
   const embed = new EmbedBuilder()
     .setColor(panel.color)
     .setTitle(`${panel.emoji} ${panel.label}`)
     .setDescription(
-      'Kliknij przycisk pod wiadomością, aby wejść na wybrany serwer. '
-      + 'Adres jest również zapisany w osobnym polu, żeby można go było łatwo zaznaczyć i skopiować.',
+      'Kliknij ikonę kopiowania przy wybranym linku albo użyj przycisku, aby od razu wejść na serwer.',
     )
-    .addFields(panel.links.map((url, index) => ({
-      name: `🔗 Serwer ${index + 1}`,
-      value: `[Otwórz serwer](${url})\n\`${url}\``,
-      inline: false,
-    })))
     .setFooter({ text: `DropVault • server-panel:${panel.key}` })
     .setTimestamp();
 
@@ -3061,6 +3158,7 @@ function buildServerPanelPayload(panel) {
   }
 
   return {
+    content: copyBlocks,
     embeds: [embed],
     components: rows,
     allowedMentions: { parse: [] },
@@ -3196,22 +3294,20 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
 
       if (formName === 'drop') {
-        await executeDropForm(interaction, {
+        await startAccountPicker(interaction, 'drop', {
           channelKey: getModalSelect(interaction, 'form_channel', 'pawel'),
           type: getModalSelect(interaction, 'form_type', 'all'),
           variant: getModalSelect(interaction, 'form_variant', 'all'),
-          account: interaction.fields.getTextInputValue('form_account'),
           rangeRaw: interaction.fields.getTextInputValue('form_range'),
         });
         return;
       }
 
       if (formName === 'today') {
-        await executeTodayCommand(interaction, {
+        await startAccountPicker(interaction, 'today', {
           channelKey: getModalSelect(interaction, 'form_channel', 'pawel'),
           type: getModalSelect(interaction, 'form_type', 'all'),
           variant: getModalSelect(interaction, 'form_variant', 'all'),
-          account: interaction.fields.getTextInputValue('form_account'),
         });
         return;
       }
@@ -3233,10 +3329,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
           });
           return;
         }
-        await executePetCommand(interaction, {
+        await startAccountPicker(interaction, 'pet', {
           queryRaw: interaction.fields.getTextInputValue('form_pet_name'),
           channelKey: getModalSelect(interaction, 'form_channel', 'pawel'),
-          accountRaw: interaction.fields.getTextInputValue('form_account'),
           variant: getModalSelect(interaction, 'form_variant', 'all'),
           dateFromRaw: dates?.from || '',
           dateToRaw: dates?.to || '',
@@ -3264,6 +3359,57 @@ client.on(Events.InteractionCreate, async (interaction) => {
         });
         return;
       }
+    }
+
+
+    if (interaction.isButton() && interaction.customId.startsWith('account_pick_page:')) {
+      const [, sessionId, action] = interaction.customId.split(':');
+      const session = dropFormSessions.get(sessionId);
+      if (!session || Date.now() - session.createdAt > SESSION_TTL_MS) {
+        await interaction.reply({ content: '❌ Lista kont wygasła. Uruchom komendę ponownie.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (interaction.user.id !== session.ownerId) {
+        await interaction.reply({ content: 'Ta lista kont należy do innej osoby.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      if (action === 'prev') session.accountPage -= 1;
+      if (action === 'next') session.accountPage += 1;
+      await interaction.update({ components: buildAccountPickerComponents(session) });
+      return;
+    }
+
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('account_pick:')) {
+      const sessionId = interaction.customId.split(':')[1];
+      const session = dropFormSessions.get(sessionId);
+      if (!session || Date.now() - session.createdAt > SESSION_TTL_MS) {
+        await interaction.reply({ content: '❌ Lista kont wygasła. Uruchom komendę ponownie.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+      if (interaction.user.id !== session.ownerId) {
+        await interaction.reply({ content: 'Ta lista kont należy do innej osoby.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      const account = interaction.values[0] === '__all__' ? 'wszystkie' : interaction.values[0];
+      dropFormSessions.delete(sessionId);
+
+      if (session.action === 'drop') {
+        await executeDropForm(interaction, { ...session.params, account });
+        return;
+      }
+      if (session.action === 'today') {
+        await executeTodayCommand(interaction, { ...session.params, account });
+        return;
+      }
+      if (session.action === 'pet') {
+        await executePetCommand(interaction, { ...session.params, accountRaw: account });
+        return;
+      }
+
+      await interaction.update({ content: '❌ Nieznany typ formularza.', components: [] });
+      return;
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('drop_channel:')) {

@@ -1,8 +1,8 @@
 {
   "name": "dropvault-bot",
-  "version": "2.6.0",
+  "version": "2.7.1",
   "private": true,
-  "description": "Discord bot do śledzenia dropów, formularzy, raportów, webhook relay i paneli prywatnych serwerów Roblox.",
+  "description": "Discord bot do śledzenia dropów z wyborem kont Roblox, raportami, webhook relay i panelami serwerów z kopiowaniem linków.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
