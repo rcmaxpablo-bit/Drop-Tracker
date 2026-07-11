@@ -122,6 +122,37 @@ const DROP_CHANNELS = [
   },
 ];
 
+
+const SERVER_PANELS = [
+  {
+    key: 'pawel',
+    label: 'Serwery Paweł',
+    channelId: process.env.PAWEL_SERVER_CHANNEL_ID || '1525508811039969480',
+    emoji: '🟢',
+    color: 0x57f287,
+    links: [
+      'https://www.roblox.com/share?code=1dc61c8f568e854b81077578dadca1d5&type=Server',
+      'https://www.roblox.com/share?code=2882ae24b287c047928f1d3de4af03b3&type=Server',
+      'https://www.roblox.com/share?code=5da9128e244dbc4fab0e8c44d4098284&type=Server',
+      'https://www.roblox.com/share?code=190f8eb553175b4bbe24a74d4ccd900b&type=Server',
+      'https://www.roblox.com/share?code=cca5563605d2c54999174d2194c161c0&type=Server',
+    ],
+  },
+  {
+    key: 'ryzen',
+    label: 'Serwery Ryzen',
+    channelId: process.env.RYZEN_SERVER_CHANNEL_ID || '1525508845324075179',
+    emoji: '🔵',
+    color: 0x5865f2,
+    links: [
+      'https://www.roblox.com/share?code=99c61ffc0c39fd4284199eaabe650757&type=Server',
+      'https://www.roblox.com/share?code=9b6a43edd3611c42b747dbcff286840b&type=Server',
+      'https://www.roblox.com/share?code=641f52d61acd3947b64f3783ef82286f&type=Server',
+      'https://www.roblox.com/share?code=c413f4bb67b31a4e89efcbcbf28901ce&type=Server',
+    ],
+  },
+];
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -182,6 +213,7 @@ let state = {
   dailyReports: {},
   records: {},
   processedMessageIds: [],
+  serverPanelMessages: {},
 };
 
 const processedMessageIds = new Set();
@@ -221,6 +253,7 @@ function loadState() {
         processedMessageIds: Array.isArray(parsed.processedMessageIds)
           ? parsed.processedMessageIds.slice(-5000)
           : [],
+        serverPanelMessages: parsed.serverPanelMessages || {},
       };
     }
   } catch (error) {
@@ -2991,6 +3024,93 @@ function startRelayServer() {
 
 startRelayServer();
 
+
+// ============================================================
+// PANELE PRYWATNYCH SERWERÓW ROBLOX
+// ============================================================
+
+function buildServerPanelPayload(panel) {
+  const embed = new EmbedBuilder()
+    .setColor(panel.color)
+    .setTitle(`${panel.emoji} ${panel.label}`)
+    .setDescription(
+      'Kliknij przycisk pod wiadomością, aby wejść na wybrany serwer. '
+      + 'Adres jest również zapisany w osobnym polu, żeby można go było łatwo zaznaczyć i skopiować.',
+    )
+    .addFields(panel.links.map((url, index) => ({
+      name: `🔗 Serwer ${index + 1}`,
+      value: `[Otwórz serwer](${url})\n\`${url}\``,
+      inline: false,
+    })))
+    .setFooter({ text: `DropVault • server-panel:${panel.key}` })
+    .setTimestamp();
+
+  const rows = [];
+  for (let index = 0; index < panel.links.length; index += 5) {
+    const row = new ActionRowBuilder();
+    for (const [offset, url] of panel.links.slice(index, index + 5).entries()) {
+      row.addComponents(
+        new ButtonBuilder()
+          .setLabel(`Serwer ${index + offset + 1}`)
+          .setEmoji('🔗')
+          .setStyle(ButtonStyle.Link)
+          .setURL(url),
+      );
+    }
+    rows.push(row);
+  }
+
+  return {
+    embeds: [embed],
+    components: rows,
+    allowedMentions: { parse: [] },
+  };
+}
+
+function isServerPanelMessage(message, panel) {
+  if (!message || message.author?.id !== client.user?.id) return false;
+  const expectedFooter = `DropVault • server-panel:${panel.key}`;
+  return message.embeds.some((embed) => embed.footer?.text === expectedFooter);
+}
+
+async function publishServerPanel(panel) {
+  const channel = await getTextChannel(panel.channelId);
+  const payload = buildServerPanelPayload(panel);
+  let panelMessage = null;
+
+  const storedMessageId = state.serverPanelMessages?.[panel.key];
+  if (storedMessageId) {
+    panelMessage = await channel.messages.fetch(storedMessageId).catch(() => null);
+    if (!isServerPanelMessage(panelMessage, panel)) panelMessage = null;
+  }
+
+  if (!panelMessage) {
+    const recentMessages = await channel.messages.fetch({ limit: 100 });
+    panelMessage = recentMessages.find((message) => isServerPanelMessage(message, panel)) || null;
+  }
+
+  if (panelMessage) {
+    await panelMessage.edit(payload);
+  } else {
+    panelMessage = await channel.send(payload);
+  }
+
+  state.serverPanelMessages ||= {};
+  state.serverPanelMessages[panel.key] = panelMessage.id;
+  saveState();
+  console.log(`Panel serwerów zaktualizowany: ${panel.label}`);
+}
+
+async function publishAllServerPanels() {
+  for (const panel of SERVER_PANELS) {
+    try {
+      await publishServerPanel(panel);
+    } catch (error) {
+      console.error(`Nie udało się opublikować panelu ${panel.label}:`, error);
+    }
+  }
+}
+
 // ============================================================
 // EVENTY DISCORDA
 // ============================================================
@@ -3005,12 +3125,13 @@ client.once(Events.ClientReady, async (readyClient) => {
     console.error('Nie udało się zarejestrować komend:', error);
   }
 
+  await publishAllServerPanels();
   startScheduler();
   await refreshPs99RapCatalog();
   startPs99RapCatalogRefresh();
   await warmCatalogAndRecords();
   alertsReady = true;
-  console.log('DropVault jest gotowy: formularze modalne, /today, relay webhooków, PS99RAP, alerty, rekordy i raport 23:59 aktywne.');
+  console.log('DropVault jest gotowy: formularze modalne, /today, panele serwerów, relay webhooków, PS99RAP, alerty, rekordy i raport 23:59 aktywne.');
 });
 
 client.on(Events.MessageCreate, async (message) => {

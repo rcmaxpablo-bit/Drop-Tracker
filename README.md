@@ -100,3 +100,14 @@ Bot potrzebuje:
 ## Wgranie aktualizacji
 
 Podmień wszystkie pliki projektu zawartością ZIP-a i wykonaj pełny `Redeploy`. Komendy serwerowe z `GUILD_ID` odświeżają się po uruchomieniu bota.
+
+## Panele prywatnych serwerów Roblox
+
+Po każdym uruchomieniu bot publikuje albo aktualizuje jeden embed z linkami:
+
+- Paweł: kanał `1525508811039969480` — 5 serwerów,
+- Ryzen: kanał `1525508845324075179` — 4 serwery.
+
+Każdy serwer ma przycisk **Serwer 1/2/...** oraz adres w formatowaniu kodu, dzięki czemu link można łatwo otworzyć albo skopiować. Bot zapamiętuje ID wiadomości i edytuje istniejący panel zamiast wysyłać duplikat przy każdym restarcie.
+
+Bot potrzebuje na obu kanałach uprawnień: **View Channel**, **Send Messages**, **Embed Links** i **Read Message History**.
