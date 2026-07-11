@@ -1,8 +1,8 @@
 {
   "name": "dropvault-bot",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "private": true,
-  "description": "Discord bot do śledzenia dropów, /today i relay webhooków Roblox z aktualnym RAP PS99RAP.",
+  "description": "Discord bot do śledzenia dropów z formularzami modalnymi, /today, relay webhooków Roblox i RAP PS99RAP.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",

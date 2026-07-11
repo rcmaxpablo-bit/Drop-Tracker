@@ -12,6 +12,7 @@ const {
   EmbedBuilder,
   Events,
   GatewayIntentBits,
+  LabelBuilder,
   MessageFlags,
   PermissionFlagsBits,
   ModalBuilder,
@@ -133,141 +134,27 @@ const client = new Client({
 // KOMENDY
 // ============================================================
 
-function addChannelChoices(option) {
-  return option
-    .addChoices(
-      { name: '🟢 Dropy Paweł', value: 'pawel' },
-      { name: '🔵 Dropy Ryzen', value: 'ryzen' },
-      { name: '📡 Oba kanały', value: 'all' },
-    );
-}
-
-function addVariantChoices(option, includeAll = true) {
-  const choices = [
-    { name: 'Normal', value: 'normal' },
-    { name: 'Golden', value: 'golden' },
-    { name: 'Rainbow', value: 'rainbow' },
-    { name: 'Shiny', value: 'shiny' },
-    { name: 'Shiny Golden', value: 'shiny_golden' },
-    { name: 'Shiny Rainbow', value: 'shiny_rainbow' },
-  ];
-
-  if (includeAll) choices.unshift({ name: 'Wszystkie warianty', value: 'all' });
-  return option.addChoices(...choices);
-}
-
 const commands = [
   new SlashCommandBuilder()
     .setName('drop')
-    .setDescription('Sprawdza dropy z wybranego kanału, konta, typu i okresu'),
+    .setDescription('Otwiera formularz do sprawdzania dropów'),
 
   new SlashCommandBuilder()
     .setName('today')
-    .setDescription('Pokazuje dzisiejsze dropy od 00:00 do teraz')
-    .addStringOption((option) => addChannelChoices(option
-      .setName('kanal')
-      .setDescription('Kanał, z którego policzyć dzisiejsze dropy')
-      .setRequired(true)))
-    .addStringOption((option) => option
-      .setName('konto')
-      .setDescription('Konto Roblox; domyślnie wszystkie')
-      .setRequired(false)
-      .setAutocomplete(true))
-    .addStringOption((option) => option
-      .setName('typ')
-      .setDescription('Opcjonalny typ peta')
-      .setRequired(false)
-      .addChoices(
-        { name: 'Wszystkie', value: 'all' },
-        { name: 'Huge', value: 'huge' },
-        { name: 'Titanic', value: 'titanic' },
-        { name: 'Gargantuan', value: 'gargantuan' },
-      ))
-    .addStringOption((option) => addVariantChoices(option
-      .setName('wariant')
-      .setDescription('Opcjonalny wariant')
-      .setRequired(false))),
+    .setDescription('Otwiera formularz dzisiejszych dropów'),
 
   new SlashCommandBuilder()
     .setName('webhookurl')
-    .setDescription('Pokazuje bezpieczny adres DropVault do wklejenia zamiast webhooka Discord')
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .addStringOption((option) => addChannelChoices(option
-      .setName('kanal')
-      .setDescription('Wybierz właściciela i kanał docelowy')
-      .setRequired(true))),
+    .setDescription('Otwiera formularz adresu DropVault dla webhooka Roblox')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
   new SlashCommandBuilder()
     .setName('pet')
-    .setDescription('Pokazuje historię dropów konkretnego peta')
-    .addStringOption((option) => option
-      .setName('nazwa')
-      .setDescription('Zacznij wpisywać nazwę peta')
-      .setRequired(true)
-      .setAutocomplete(true))
-    .addStringOption((option) => addChannelChoices(option
-      .setName('kanal')
-      .setDescription('Kanał, na którym szukać')
-      .setRequired(true)))
-    .addStringOption((option) => option
-      .setName('konto')
-      .setDescription('Konto Roblox; zostaw puste, aby wybrać wszystkie')
-      .setRequired(false)
-      .setAutocomplete(true))
-    .addStringOption((option) => addVariantChoices(option
-      .setName('wariant')
-      .setDescription('Opcjonalny filtr wariantu')
-      .setRequired(false)))
-    .addStringOption((option) => option
-      .setName('data_od')
-      .setDescription('Opcjonalnie DD.MM.RRRR')
-      .setRequired(false))
-    .addStringOption((option) => option
-      .setName('data_do')
-      .setDescription('Opcjonalnie DD.MM.RRRR')
-      .setRequired(false)),
+    .setDescription('Otwiera formularz historii konkretnego peta'),
 
   new SlashCommandBuilder()
     .setName('petvalue')
-    .setDescription('Pokazuje czystą historię RAP peta wyłącznie z PS99RAP')
-    .addStringOption((option) => option
-      .setName('nazwa')
-      .setDescription('Zacznij wpisywać nazwę peta')
-      .setRequired(true)
-      .setAutocomplete(true))
-    .addStringOption((option) => option
-      .setName('typ')
-      .setDescription('Opcjonalnie zawęź podpowiedzi do typu peta')
-      .setRequired(false)
-      .addChoices(
-        { name: 'Wszystkie typy', value: 'all' },
-        { name: 'Huge', value: 'huge' },
-        { name: 'Titanic', value: 'titanic' },
-        { name: 'Gargantuan', value: 'gargantuan' },
-      ))
-    .addStringOption((option) => addVariantChoices(option
-      .setName('wariant')
-      .setDescription('Opcjonalnie zawęź podpowiedzi do wariantu')
-      .setRequired(false)))
-    .addStringOption((option) => option
-      .setName('okres')
-      .setDescription('Zakres historii; własne daty mają pierwszeństwo')
-      .setRequired(false)
-      .addChoices(
-        { name: 'Ostatnie 7 dni', value: '7d' },
-        { name: 'Ostatnie 30 dni', value: '30d' },
-        { name: 'Ostatnie 90 dni', value: '90d' },
-        { name: 'Ostatnie 180 dni', value: '180d' },
-        { name: 'Cała historia', value: 'all' },
-      ))
-    .addStringOption((option) => option
-      .setName('data_od')
-      .setDescription('Opcjonalnie DD.MM.RRRR')
-      .setRequired(false))
-    .addStringOption((option) => option
-      .setName('data_do')
-      .setDescription('Opcjonalnie DD.MM.RRRR')
-      .setRequired(false)),
+    .setDescription('Otwiera formularz historii RAP z PS99RAP'),
 ];
 
 // ============================================================
@@ -440,6 +327,277 @@ function buildChannelSelect(customId, placeholder = 'Wybierz kanał z dropami') 
         .setEmoji('📡'),
     );
 }
+
+
+function makeStringSelect(customId, placeholder, options, defaultValue = null) {
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(customId)
+    .setPlaceholder(placeholder)
+    .setMinValues(1)
+    .setMaxValues(1);
+
+  menu.addOptions(...options.map((option) => {
+    const builder = new StringSelectMenuOptionBuilder()
+      .setLabel(option.label)
+      .setValue(option.value);
+    if (option.description) builder.setDescription(option.description);
+    if (option.emoji) builder.setEmoji(option.emoji);
+    if (defaultValue && option.value === defaultValue) builder.setDefault(true);
+    return builder;
+  }));
+
+  return menu;
+}
+
+function makeSelectLabel(label, description, menu) {
+  const builder = new LabelBuilder().setLabel(label).setStringSelectMenuComponent(menu);
+  if (description) builder.setDescription(description);
+  return builder;
+}
+
+function makeTextLabel(label, description, customId, placeholder, options = {}) {
+  const input = new TextInputBuilder()
+    .setCustomId(customId)
+    .setStyle(options.style || TextInputStyle.Short)
+    .setRequired(options.required ?? false);
+
+  if (placeholder) input.setPlaceholder(placeholder);
+  if (options.value) input.setValue(options.value);
+  if (options.minLength) input.setMinLength(options.minLength);
+  if (options.maxLength) input.setMaxLength(options.maxLength);
+
+  const builder = new LabelBuilder().setLabel(label).setTextInputComponent(input);
+  if (description) builder.setDescription(description);
+  return builder;
+}
+
+function modalChannelOptions(allowAll = true) {
+  const options = DROP_CHANNELS.map((channel) => ({
+    label: channel.label,
+    value: channel.key,
+    emoji: channel.emoji,
+  }));
+  if (allowAll) {
+    options.push({
+      label: 'Oba kanały',
+      value: 'all',
+      emoji: '📡',
+      description: 'Łączy dropy Pawła i Ryzena',
+    });
+  }
+  return options;
+}
+
+const PET_TYPE_OPTIONS = [
+  { label: 'Wszystkie', value: 'all', emoji: '📦' },
+  { label: 'Huge', value: 'huge', emoji: '🐱' },
+  { label: 'Titanic', value: 'titanic', emoji: '🦣' },
+  { label: 'Gargantuan', value: 'gargantuan', emoji: '🌋' },
+];
+
+const PET_VARIANT_OPTIONS = [
+  { label: 'Wszystkie warianty', value: 'all', emoji: '📦' },
+  { label: 'Normal', value: 'normal', emoji: '⚪' },
+  { label: 'Golden', value: 'golden', emoji: '🟡' },
+  { label: 'Rainbow', value: 'rainbow', emoji: '🌈' },
+  { label: 'Shiny', value: 'shiny', emoji: '✨' },
+  { label: 'Shiny Golden', value: 'shiny_golden', emoji: '🌟' },
+  { label: 'Shiny Rainbow', value: 'shiny_rainbow', emoji: '💎' },
+];
+
+function buildDropFormModal(userId) {
+  const now = DateTime.now().setZone(TIME_ZONE);
+  const today = now.toFormat('dd.MM.yyyy');
+  return new ModalBuilder()
+    .setCustomId(`form:drop:${userId}`)
+    .setTitle('Sprawdź dropy')
+    .addLabelComponents(
+      makeSelectLabel(
+        'KANAŁ DROPÓW',
+        'Wybierz Pawła, Ryzena albo oba kanały.',
+        makeStringSelect('form_channel', 'Wybierz kanał', modalChannelOptions(true), 'pawel'),
+      ),
+      makeSelectLabel(
+        'RODZAJ PETA',
+        'Huge, Titanic, Gargantuan lub wszystkie.',
+        makeStringSelect('form_type', 'Wybierz rodzaj', PET_TYPE_OPTIONS, 'all'),
+      ),
+      makeSelectLabel(
+        'WARIANT',
+        'Możesz ograniczyć wyniki do konkretnego wariantu.',
+        makeStringSelect('form_variant', 'Wybierz wariant', PET_VARIANT_OPTIONS, 'all'),
+      ),
+      makeTextLabel(
+        'KONTO ROBLOX',
+        'Wpisz nick albo zostaw puste, aby policzyć wszystkie konta.',
+        'form_account',
+        'np. ps99_alts23 lub wszystkie',
+        { required: false, maxLength: 100 },
+      ),
+      makeTextLabel(
+        'DATA I GODZINA',
+        'Format: DD.MM.RRRR GG:MM - DD.MM.RRRR GG:MM',
+        'form_range',
+        `${today} 00:00 - ${today} 23:59`,
+        { required: true, value: `${today} 00:00 - ${today} 23:59`, maxLength: 45 },
+      ),
+    );
+}
+
+function buildTodayFormModal(userId) {
+  return new ModalBuilder()
+    .setCustomId(`form:today:${userId}`)
+    .setTitle('Dzisiejsze dropy')
+    .addLabelComponents(
+      makeSelectLabel(
+        'KANAŁ DROPÓW',
+        'Wybierz kanał, który ma zostać podsumowany.',
+        makeStringSelect('form_channel', 'Wybierz kanał', modalChannelOptions(true), 'pawel'),
+      ),
+      makeSelectLabel(
+        'RODZAJ PETA',
+        'Domyślnie bot policzy wszystkie rodzaje.',
+        makeStringSelect('form_type', 'Wybierz rodzaj', PET_TYPE_OPTIONS, 'all'),
+      ),
+      makeSelectLabel(
+        'WARIANT',
+        'Domyślnie bot policzy wszystkie warianty.',
+        makeStringSelect('form_variant', 'Wybierz wariant', PET_VARIANT_OPTIONS, 'all'),
+      ),
+      makeTextLabel(
+        'KONTO ROBLOX',
+        'Wpisz nick albo zostaw puste, aby policzyć wszystkie konta.',
+        'form_account',
+        'np. ps99_alts23 lub wszystkie',
+        { required: false, maxLength: 100 },
+      ),
+    );
+}
+
+function buildPetFormModal(userId) {
+  return new ModalBuilder()
+    .setCustomId(`form:pet:${userId}`)
+    .setTitle('Historia peta')
+    .addLabelComponents(
+      makeTextLabel(
+        'NAZWA PETA',
+        'Możesz wpisać pełną nazwę albo jej fragment.',
+        'form_pet_name',
+        'np. Titanic Goalie Octopus',
+        { required: true, minLength: 2, maxLength: 100 },
+      ),
+      makeSelectLabel(
+        'KANAŁ DROPÓW',
+        'Wybierz kanał, na którym bot ma szukać.',
+        makeStringSelect('form_channel', 'Wybierz kanał', modalChannelOptions(true), 'pawel'),
+      ),
+      makeTextLabel(
+        'KONTO ROBLOX',
+        'Wpisz nick albo zostaw puste, aby sprawdzić wszystkie konta.',
+        'form_account',
+        'np. ps99_alts23 lub wszystkie',
+        { required: false, maxLength: 100 },
+      ),
+      makeSelectLabel(
+        'WARIANT',
+        'Opcjonalny filtr wariantu peta.',
+        makeStringSelect('form_variant', 'Wybierz wariant', PET_VARIANT_OPTIONS, 'all'),
+      ),
+      makeTextLabel(
+        'ZAKRES DAT',
+        'Opcjonalnie: DD.MM.RRRR - DD.MM.RRRR. Puste = cała historia.',
+        'form_dates',
+        'np. 01.07.2026 - 11.07.2026',
+        { required: false, maxLength: 25 },
+      ),
+    );
+}
+
+function buildPetValueFormModal(userId) {
+  const periodOptions = [
+    { label: 'Ostatnie 7 dni', value: '7d', emoji: '7️⃣' },
+    { label: 'Ostatnie 30 dni', value: '30d', emoji: '📅' },
+    { label: 'Ostatnie 90 dni', value: '90d', emoji: '📊' },
+    { label: 'Ostatnie 180 dni', value: '180d', emoji: '📈' },
+    { label: 'Cała historia', value: 'all', emoji: '🗂️' },
+  ];
+
+  return new ModalBuilder()
+    .setCustomId(`form:petvalue:${userId}`)
+    .setTitle('Sprawdź wartość peta')
+    .addLabelComponents(
+      makeTextLabel(
+        'NAZWA PETA',
+        'Wpisz możliwie dokładną nazwę z Pet Simulator 99.',
+        'form_pet_name',
+        'np. Titanic Goalie Octopus',
+        { required: true, minLength: 2, maxLength: 100 },
+      ),
+      makeSelectLabel(
+        'RODZAJ PETA',
+        'Pomaga odróżnić podobne nazwy.',
+        makeStringSelect('form_type', 'Wybierz rodzaj', PET_TYPE_OPTIONS, 'all'),
+      ),
+      makeSelectLabel(
+        'WARIANT',
+        'Pomaga odróżnić Normal, Golden, Rainbow i Shiny.',
+        makeStringSelect('form_variant', 'Wybierz wariant', PET_VARIANT_OPTIONS, 'all'),
+      ),
+      makeSelectLabel(
+        'OKRES HISTORII',
+        'Własne daty poniżej mają pierwszeństwo.',
+        makeStringSelect('form_period', 'Wybierz okres', periodOptions, '30d'),
+      ),
+      makeTextLabel(
+        'WŁASNY ZAKRES DAT',
+        'Opcjonalnie: DD.MM.RRRR - DD.MM.RRRR',
+        'form_dates',
+        'np. 01.07.2026 - 11.07.2026',
+        { required: false, maxLength: 25 },
+      ),
+    );
+}
+
+function buildWebhookUrlFormModal(userId) {
+  return new ModalBuilder()
+    .setCustomId(`form:webhookurl:${userId}`)
+    .setTitle('Adres DropVault')
+    .addLabelComponents(
+      makeSelectLabel(
+        'DLA KOGO?',
+        'Wybierz osobny kanał Pawła albo Ryzena.',
+        makeStringSelect('form_channel', 'Wybierz kanał', modalChannelOptions(false), 'pawel'),
+      ),
+    );
+}
+
+function getModalSelect(interaction, customId, fallback = '') {
+  const values = interaction.fields.getStringSelectValues(customId);
+  return values?.[0] || fallback;
+}
+
+function splitDateRange(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return { from: '', to: '' };
+  const match = value.match(/^\s*(\d{2}\.\d{2}\.\d{4})\s*(?:-|–|—|do)\s*(\d{2}\.\d{2}\.\d{4})\s*$/i);
+  if (!match) return null;
+  return { from: match[1], to: match[2] };
+}
+
+function splitDateTimeRange(raw) {
+  const value = String(raw || '').trim();
+  const match = value.match(
+    /^\s*(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})\s*(?:-|–|—|do)\s*(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})\s*$/i,
+  );
+  if (!match) return null;
+  return {
+    dateFrom: match[1],
+    timeFrom: match[2],
+    dateTo: match[3],
+    timeTo: match[4],
+  };
+}
+
 
 function typeLabel(type) {
   return {
@@ -2085,13 +2243,13 @@ async function registerCommands() {
   }
 }
 
-async function executeTodayCommand(interaction) {
+async function executeTodayCommand(interaction, params = null) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  const channelKey = interaction.options.getString('kanal', true);
-  const account = interaction.options.getString('konto')?.trim() || 'wszystkie';
-  const type = interaction.options.getString('typ') || 'all';
-  const variant = interaction.options.getString('wariant') || 'all';
+  const channelKey = params?.channelKey ?? interaction.options.getString('kanal', true);
+  const account = (params?.account ?? interaction.options.getString('konto') ?? '').trim() || 'wszystkie';
+  const type = params?.type ?? interaction.options.getString('typ') ?? 'all';
+  const variant = params?.variant ?? interaction.options.getString('wariant') ?? 'all';
   const selection = getChannelSelection(channelKey);
 
   if (!selection) {
@@ -2171,6 +2329,105 @@ async function executeTodayCommand(interaction) {
   await interaction.editReply({ embeds: rendered.embeds, components: rendered.components });
 }
 
+
+async function executeDropForm(interaction, params) {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const range = splitDateTimeRange(params.rangeRaw);
+  if (!range) {
+    await interaction.editReply(
+      '❌ Nieprawidłowy zakres. Użyj formatu: `11.07.2026 00:00 - 11.07.2026 23:59`.',
+    );
+    return;
+  }
+
+  const from = parseLocalDateTime(range.dateFrom, range.timeFrom);
+  const to = parseLocalDateTime(range.dateTo, range.timeTo);
+  if (!from || !to) {
+    await interaction.editReply('❌ Nieprawidłowa data lub godzina. Przykład: `11.07.2026 00:30`.');
+    return;
+  }
+  if (to < from) {
+    await interaction.editReply('❌ Data/godzina „do” nie może być wcześniejsza niż „od”.');
+    return;
+  }
+
+  const selection = getChannelSelection(params.channelKey);
+  if (!selection) {
+    await interaction.editReply('❌ Nie znaleziono kanału.');
+    return;
+  }
+
+  const account = String(params.account || '').trim() || 'wszystkie';
+  const result = await fetchDropsFromChannels(selection.ids, from.toMillis(), to.toMillis());
+  const filtered = result.drops.filter((drop) => (
+    (params.type === 'all' || drop.type === params.type)
+    && variantMatches(drop.item, params.variant)
+    && accountMatches(drop.account, account)
+  ));
+  const repriced = await repriceDrops(filtered, result.drops, selection.ids);
+
+  const itemCounts = new Map();
+  for (const drop of repriced.drops) {
+    const key = normalizeItemName(drop.item);
+    const current = itemCounts.get(key) || {
+      item: drop.item,
+      type: drop.type,
+      count: 0,
+      rap: drop.rap,
+      createdAt: drop.createdAt,
+    };
+    current.count += 1;
+    if (drop.createdAt > current.createdAt) {
+      current.item = drop.item;
+      current.type = drop.type;
+      current.rap = drop.rap;
+      current.createdAt = drop.createdAt;
+    }
+    itemCounts.set(key, current);
+  }
+
+  const itemGroups = [...itemCounts.values()].sort((a, b) => {
+    const hierarchy = compareByHierarchy(a, b);
+    if (hierarchy !== 0) return hierarchy;
+    return b.count - a.count;
+  });
+
+  const pageCount = Math.max(
+    1,
+    Math.ceil(repriced.drops.length / HISTORY_PAGE_SIZE),
+    Math.ceil(itemGroups.length / HISTORY_PAGE_SIZE),
+  );
+  const paginationId = createSessionId();
+  const pagination = {
+    id: paginationId,
+    kind: 'drop',
+    ownerId: interaction.user.id,
+    createdAt: Date.now(),
+    pageCount,
+    drops: repriced.drops,
+    itemGroups,
+    type: params.type,
+    variant: params.variant,
+    account,
+    channelLabel: selection.label,
+    from,
+    to,
+    scanned: result.scanned + repriced.scanned,
+    hitLimit: result.hitLimit || repriced.hitLimit,
+    channelsScanned: result.channelsScanned,
+    pricingFound: repriced.pricingFound,
+    pricingWanted: repriced.pricingWanted,
+    pricingFromPs99Rap: repriced.pricingFromPs99Rap,
+    pricingFallback: repriced.pricingFallback,
+    ps99RapErrors: repriced.ps99RapErrors,
+  };
+
+  paginationSessions.set(paginationId, pagination);
+  const rendered = renderPaginationSession(pagination, 0);
+  await interaction.editReply({ embeds: rendered.embeds, components: rendered.components });
+}
+
 function getPublicBaseUrl() {
   return PUBLIC_BASE_URL_RAW || null;
 }
@@ -2181,8 +2438,8 @@ function buildRelayUrl(channelConfig) {
   return `${base}/drop-webhook/${encodeURIComponent(channelConfig.key)}/${encodeURIComponent(channelConfig.ingestSecret)}`;
 }
 
-async function executeWebhookUrlCommand(interaction) {
-  const channelKey = interaction.options.getString('kanal', true);
+async function executeWebhookUrlCommand(interaction, params = null) {
+  const channelKey = params?.channelKey ?? interaction.options.getString('kanal', true);
   if (channelKey === 'all') {
     await interaction.reply({
       content: '❌ Dla adresu webhooka wybierz osobno Pawła albo Ryzena.',
@@ -2215,15 +2472,15 @@ async function executeWebhookUrlCommand(interaction) {
   });
 }
 
-async function executePetCommand(interaction) {
+async function executePetCommand(interaction, params = null) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  const queryRaw = interaction.options.getString('nazwa', true).trim();
-  const channelKey = interaction.options.getString('kanal', true);
-  const accountRaw = interaction.options.getString('konto')?.trim() || 'wszystkie';
-  const variant = interaction.options.getString('wariant') || 'all';
-  const dateFromRaw = interaction.options.getString('data_od')?.trim() || '';
-  const dateToRaw = interaction.options.getString('data_do')?.trim() || '';
+  const queryRaw = (params?.queryRaw ?? interaction.options.getString('nazwa', true)).trim();
+  const channelKey = params?.channelKey ?? interaction.options.getString('kanal', true);
+  const accountRaw = (params?.accountRaw ?? interaction.options.getString('konto') ?? '').trim() || 'wszystkie';
+  const variant = params?.variant ?? interaction.options.getString('wariant') ?? 'all';
+  const dateFromRaw = (params?.dateFromRaw ?? interaction.options.getString('data_od') ?? '').trim();
+  const dateToRaw = (params?.dateToRaw ?? interaction.options.getString('data_do') ?? '').trim();
   const query = normalizeItemName(queryRaw);
 
   const from = parseOptionalDate(dateFromRaw, false);
@@ -2332,13 +2589,13 @@ async function executePetCommand(interaction) {
   await interaction.editReply({ embeds: rendered.embeds, components: rendered.components });
 }
 
-async function executePetValueCommand(interaction) {
+async function executePetValueCommand(interaction, params = null) {
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  const queryRaw = interaction.options.getString('nazwa', true).trim();
-  const period = interaction.options.getString('okres') || '30d';
-  const dateFromRaw = interaction.options.getString('data_od')?.trim() || '';
-  const dateToRaw = interaction.options.getString('data_do')?.trim() || '';
+  const queryRaw = (params?.queryRaw ?? interaction.options.getString('nazwa', true)).trim();
+  const period = params?.period ?? interaction.options.getString('okres') ?? '30d';
+  const dateFromRaw = (params?.dateFromRaw ?? interaction.options.getString('data_od') ?? '').trim();
+  const dateToRaw = (params?.dateToRaw ?? interaction.options.getString('data_do') ?? '').trim();
   const query = normalizeItemName(queryRaw);
 
   const customFrom = parseOptionalDate(dateFromRaw, false);
@@ -2377,7 +2634,21 @@ async function executePetValueCommand(interaction) {
   // /petvalue korzysta z pełnego katalogu PS99RAP, a nie tylko z petów,
   // które pojawiły się wcześniej na kanałach Pawła lub Ryzena.
   await refreshPs99RapCatalog();
-  const resolved = resolvePs99RapCatalogEntry(queryRaw);
+  const typeFilter = params?.type ?? interaction.options.getString('typ') ?? 'all';
+  const variantFilter = params?.variant ?? interaction.options.getString('wariant') ?? 'all';
+  const resolvedRaw = resolvePs99RapCatalogEntry(queryRaw);
+  const filteredMatches = resolvedRaw.matches.filter((entry) => (
+    (typeFilter === 'all' || detectPetType(entry.name) === typeFilter)
+    && variantMatches(entry.name, variantFilter)
+  ));
+  const resolved = {
+    entry: resolvedRaw.entry
+      && (typeFilter === 'all' || detectPetType(resolvedRaw.entry.name) === typeFilter)
+      && variantMatches(resolvedRaw.entry.name, variantFilter)
+      ? resolvedRaw.entry
+      : (filteredMatches.length === 1 ? filteredMatches[0] : null),
+    matches: filteredMatches,
+  };
 
   if (!resolved.entry && resolved.matches.length > 1) {
     const examples = resolved.matches.slice(0, 10).map((entry) => `• ${entry.name}`).join('\n');
@@ -2739,7 +3010,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   startPs99RapCatalogRefresh();
   await warmCatalogAndRecords();
   alertsReady = true;
-  console.log('DropVault jest gotowy: /today, relay webhooków, PS99RAP, alerty, rekordy, raport 23:59 i autocomplete aktywne.');
+  console.log('DropVault jest gotowy: formularze modalne, /today, relay webhooków, PS99RAP, alerty, rekordy i raport 23:59 aktywne.');
 });
 
 client.on(Events.MessageCreate, async (message) => {
@@ -2772,33 +3043,106 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     if (interaction.isChatInputCommand() && interaction.commandName === 'drop') {
-      const channelSelect = buildChannelSelect(`drop_channel:${interaction.user.id}`);
-      await interaction.reply({
-        content: 'Wybierz osobny kanał, z którego bot ma policzyć dropy:',
-        components: [new ActionRowBuilder().addComponents(channelSelect)],
-        flags: MessageFlags.Ephemeral,
-      });
+      await interaction.showModal(buildDropFormModal(interaction.user.id));
       return;
     }
 
     if (interaction.isChatInputCommand() && interaction.commandName === 'today') {
-      await executeTodayCommand(interaction);
+      await interaction.showModal(buildTodayFormModal(interaction.user.id));
       return;
     }
 
     if (interaction.isChatInputCommand() && interaction.commandName === 'webhookurl') {
-      await executeWebhookUrlCommand(interaction);
+      await interaction.showModal(buildWebhookUrlFormModal(interaction.user.id));
       return;
     }
 
     if (interaction.isChatInputCommand() && interaction.commandName === 'pet') {
-      await executePetCommand(interaction);
+      await interaction.showModal(buildPetFormModal(interaction.user.id));
       return;
     }
 
     if (interaction.isChatInputCommand() && interaction.commandName === 'petvalue') {
-      await executePetValueCommand(interaction);
+      await interaction.showModal(buildPetValueFormModal(interaction.user.id));
       return;
+    }
+
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('form:')) {
+      const [, formName, ownerId] = interaction.customId.split(':');
+      if (interaction.user.id !== ownerId) {
+        await interaction.reply({ content: 'Ten formularz należy do innej osoby.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+      if (formName === 'drop') {
+        await executeDropForm(interaction, {
+          channelKey: getModalSelect(interaction, 'form_channel', 'pawel'),
+          type: getModalSelect(interaction, 'form_type', 'all'),
+          variant: getModalSelect(interaction, 'form_variant', 'all'),
+          account: interaction.fields.getTextInputValue('form_account'),
+          rangeRaw: interaction.fields.getTextInputValue('form_range'),
+        });
+        return;
+      }
+
+      if (formName === 'today') {
+        await executeTodayCommand(interaction, {
+          channelKey: getModalSelect(interaction, 'form_channel', 'pawel'),
+          type: getModalSelect(interaction, 'form_type', 'all'),
+          variant: getModalSelect(interaction, 'form_variant', 'all'),
+          account: interaction.fields.getTextInputValue('form_account'),
+        });
+        return;
+      }
+
+      if (formName === 'webhookurl') {
+        await executeWebhookUrlCommand(interaction, {
+          channelKey: getModalSelect(interaction, 'form_channel', 'pawel'),
+        });
+        return;
+      }
+
+      if (formName === 'pet') {
+        const datesRaw = interaction.fields.getTextInputValue('form_dates');
+        const dates = splitDateRange(datesRaw);
+        if (datesRaw.trim() && !dates) {
+          await interaction.reply({
+            content: '❌ Nieprawidłowy zakres dat. Użyj: `01.07.2026 - 11.07.2026`.',
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+        await executePetCommand(interaction, {
+          queryRaw: interaction.fields.getTextInputValue('form_pet_name'),
+          channelKey: getModalSelect(interaction, 'form_channel', 'pawel'),
+          accountRaw: interaction.fields.getTextInputValue('form_account'),
+          variant: getModalSelect(interaction, 'form_variant', 'all'),
+          dateFromRaw: dates?.from || '',
+          dateToRaw: dates?.to || '',
+        });
+        return;
+      }
+
+      if (formName === 'petvalue') {
+        const datesRaw = interaction.fields.getTextInputValue('form_dates');
+        const dates = splitDateRange(datesRaw);
+        if (datesRaw.trim() && !dates) {
+          await interaction.reply({
+            content: '❌ Nieprawidłowy zakres dat. Użyj: `01.07.2026 - 11.07.2026`.',
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+        await executePetValueCommand(interaction, {
+          queryRaw: interaction.fields.getTextInputValue('form_pet_name'),
+          type: getModalSelect(interaction, 'form_type', 'all'),
+          variant: getModalSelect(interaction, 'form_variant', 'all'),
+          period: getModalSelect(interaction, 'form_period', '30d'),
+          dateFromRaw: dates?.from || '',
+          dateToRaw: dates?.to || '',
+        });
+        return;
+      }
     }
 
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith('drop_channel:')) {

@@ -1,97 +1,95 @@
-# DropVault Bot 2.4 — `/today` i webhook relay
+# DropVault Bot 2.5 — formularze w oknach Discorda
 
-Bot Discord do analizowania dropów Huge, Titanic i Gargantuan z dwóch oddzielnych kanałów. Aktualny RAP oraz historia cen są pobierane z PS99RAP.
+Bot analizuje dropy Huge, Titanic i Gargantuan z dwóch oddzielnych kanałów oraz pobiera aktualny RAP z PS99RAP.
 
-## Nowość: `/today`
+## Najważniejsza zmiana
 
-Przykład:
+Po wpisaniu komendy bot otwiera jedno okno formularza podobne do formularza ze screena. W oknie są listy wyboru oraz pola tekstowe.
 
-```text
-/today kanal:Dropy Paweł konto:wszystkie typ:Wszystkie wariant:Wszystkie warianty
-```
+### `/drop`
 
-Komenda liczy dropy od `00:00` do chwili użycia komendy w strefie `Europe/Warsaw`. Można filtrować kanał, konto, typ i wariant. Wynik ma podział petów, łączny RAP i najlepsze dropy sortowane według RAP.
+Formularz zawiera:
 
-## Nowość: webhook relay Roblox → bot Discord
+- kanał: 🟢 Dropy Paweł / 🔵 Dropy Ryzen / oba,
+- rodzaj: Huge / Titanic / Gargantuan / wszystkie,
+- wariant: Normal / Golden / Rainbow / Shiny / Shiny Golden / Shiny Rainbow,
+- konto Roblox — puste oznacza wszystkie,
+- zakres dat i godzin w formacie `DD.MM.RRRR GG:MM - DD.MM.RRRR GG:MM`.
 
-Zamiast wklejać do skryptu bezpośredni Discord webhook, wklejasz adres DropVault. Relay przyjmuje standardowy payload webhooka Discord, odczytuje `Item`, `In Account` oraz RAP, pobiera bieżący RAP z PS99RAP i publikuje embed jako zwykła wiadomość bota.
+### `/today`
 
-Dzięki temu nad wiadomością widnieje bot DropVault, a nie nazwa webhooka ZapHub.
+Formularz zawiera kanał, rodzaj, wariant i konto. Bot liczy od dzisiejszej godziny `00:00` do chwili użycia komendy.
 
-### Konfiguracja
+### `/pet`
 
-Na Railway dodaj:
+Formularz zawiera nazwę peta, kanał, konto, wariant oraz opcjonalny zakres dat `DD.MM.RRRR - DD.MM.RRRR`.
 
-```env
-PAWEL_INGEST_SECRET=DLUGIE_LOSOWE_HASLO_PAWEL
-RYZEN_INGEST_SECRET=INNE_DLUGIE_LOSOWE_HASLO_RYZEN
-```
+### `/petvalue`
 
-Potem:
+Formularz zawiera nazwę peta, rodzaj, wariant, okres historii oraz opcjonalny własny zakres dat. Historia pochodzi wyłącznie z PS99RAP.
 
-1. Railway → **Settings → Networking → Generate Domain**.
-2. Wykonaj **Redeploy**.
-3. Na Discordzie użyj `/webhookurl` i wybierz Pawła albo Ryzena.
-4. Skopiowany URL wklej w istniejącym skrypcie w miejsce Discord webhooka.
+### `/webhookurl`
 
-Adres jest osobny dla każdej osoby i kieruje wiadomość na właściwy kanał:
+Administrator wybiera w oknie Pawła albo Ryzena i dostaje osobny adres relay do wklejenia w skrypcie Roblox.
 
-- 🟢 Paweł: `1515437409653756005`
-- 🔵 Ryzen: `1524841513606189178`
+## Kanały i pingi
 
-`/webhookurl` jest domyślnie dostępne tylko dla osób z uprawnieniem **Manage Server**. URL zawiera sekret. Po wycieku zmień sekret na Railway i zrób Redeploy.
+- 🟢 Dropy Paweł: `1515437409653756005`
+- 🔵 Dropy Ryzen: `1524841513606189178`
+- Ping Paweł: `1265797244074852576`
+- Ping Ryzen: `1330652001075335300`
 
-### Wymagany format payloadu
-
-Relay obsługuje zwykły JSON webhooka Discord:
-
-```json
-{
-  "embeds": [
-    {
-      "title": "You have obtained a new Huge pet!",
-      "fields": [
-        {
-          "name": "Obtained Huge Pet Info",
-          "value": "Item: `Huge Referee Dalmatian`\nRAP: `23700000`"
-        },
-        {
-          "name": "User Info",
-          "value": "In Account: `konto123`"
-        }
-      ]
-    }
-  ]
-}
-```
-
-Jeżeli używany skrypt sprawdza, czy URL zaczyna się dokładnie od domeny Discorda, trzeba zmienić tę walidację w skrypcie. Nie należy umieszczać tokenu bota w Robloxie.
+Wszystkie ID można zmienić przez Railway Variables.
 
 ## Pozostałe funkcje
 
-- `/drop` — zakres dat i godzin, osobny kanał, konto, typ i wariant,
-- `/pet` — historia dropów konkretnego peta,
-- `/petvalue` — historia RAP wyłącznie z PS99RAP,
-- raport dzienny o 23:59 osobno dla Pawła i Ryzena,
-- alerty dla Titanic, Gargantuan, Shiny Rainbow, 4B ±100M i rekordów,
-- automatyczny aktualny RAP z PS99RAP z fallbackiem na kanał,
-- autocomplete nazw petów i kont,
-- przyciski poprzednia/następna,
-- ochrona relay przed identycznym ponownym payloadem przez 30 sekund.
+- raport dzienny o `23:59` osobno dla Pawła i Ryzena,
+- aktualny RAP z PS99RAP z awaryjną ceną z kanału,
+- alerty dla Titanic, Gargantuan, Shiny Rainbow i RAP `4B ±100M`,
+- rekordy RAP,
+- przyciski następnej i poprzedniej strony,
+- relay webhooka Roblox, dzięki któremu drop wysyła bot DropVault.
 
-## Railway
+## Railway Variables
 
-Najważniejsze zmienne znajdują się w `.env.example`. Dodaj Volume z mount path:
+Najważniejsze zmienne:
+
+```env
+TOKEN=TOKEN_BOTA
+CLIENT_ID=ID_APLIKACJI
+GUILD_ID=ID_SERWERA
+TIME_ZONE=Europe/Warsaw
+MAX_MESSAGES=25000
+
+PAWEL_DROP_CHANNEL_ID=1515437409653756005
+RYZEN_DROP_CHANNEL_ID=1524841513606189178
+PAWEL_REPORT_CHANNEL_ID=1515437409653756005
+RYZEN_REPORT_CHANNEL_ID=1524841513606189178
+PAWEL_ALERT_USER_ID=1265797244074852576
+RYZEN_ALERT_USER_ID=1330652001075335300
+
+PAWEL_INGEST_SECRET=DŁUGIE_LOSOWE_HASŁO
+RYZEN_INGEST_SECRET=INNE_DŁUGIE_LOSOWE_HASŁO
+
+ALERT_RAP_CENTER=4000000000
+ALERT_RAP_TOLERANCE=100000000
+PS99RAP_ENABLED=true
+STATE_DIR=/app/data
+```
+
+## Railway Volume
+
+Dodaj Volume z mount path:
 
 ```text
 /app/data
 ```
 
-Bot uruchamia jednocześnie klienta Discord i serwer HTTP. Railway przekazuje port przez zmienną `PORT`; kod nasłuchuje na `0.0.0.0`.
+## Discord Developer Portal
 
-## Uprawnienia Discord
+Włącz `Message Content Intent`.
 
-Włącz `Message Content Intent`. Bot potrzebuje:
+Bot potrzebuje:
 
 - View Channel,
 - Read Message History,
@@ -99,12 +97,6 @@ Włącz `Message Content Intent`. Bot potrzebuje:
 - Embed Links,
 - Use Application Commands.
 
-## Kontrola działania relay
+## Wgranie aktualizacji
 
-Po wygenerowaniu domeny otwórz w przeglądarce:
-
-```text
-https://TWOJA-DOMENA/health
-```
-
-Powinien pojawić się JSON z `ok: true` i `discordReady: true`.
+Podmień wszystkie pliki projektu zawartością ZIP-a i wykonaj pełny `Redeploy`. Komendy serwerowe z `GUILD_ID` odświeżają się po uruchomieniu bota.
