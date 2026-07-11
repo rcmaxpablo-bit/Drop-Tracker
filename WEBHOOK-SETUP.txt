@@ -1,0 +1,27 @@
+DROPVAULT — WEBHOOK RELAY
+
+1. Na Railway dodaj dwie zmienne:
+   PAWEL_INGEST_SECRET=<długie losowe hasło>
+   RYZEN_INGEST_SECRET=<inne długie losowe hasło>
+
+2. W Railway wejdź w Settings -> Networking i kliknij Generate Domain.
+
+3. Zrób Redeploy.
+
+4. Na Discordzie użyj:
+   /webhookurl kanal:Dropy Paweł
+   /webhookurl kanal:Dropy Ryzen
+
+5. Skopiowany adres wklej w swoim istniejącym skrypcie Roblox w miejsce,
+   gdzie normalnie wpisujesz Discord webhook URL.
+
+Skrypt musi wysyłać standardowy JSON webhooka Discord z tablicą "embeds".
+Bot odczyta Item i In Account, pobierze aktualny RAP, a następnie wyśle
+wiadomość jako bot na odpowiednim kanale.
+
+WAŻNE:
+- nie wklejaj TOKENU bota do skryptu Roblox,
+- adres /webhookurl zawiera sekret — nie udostępniaj go,
+- po wycieku zmień odpowiedni *_INGEST_SECRET i zrób Redeploy,
+- jeżeli dany skrypt akceptuje wyłącznie domenę discord.com, trzeba zmienić
+  w nim walidację URL; sam relay nie może tego obejść.

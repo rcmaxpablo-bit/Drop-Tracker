@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const http = require('node:http');
 const {
   ActionRowBuilder,
   ButtonBuilder,
@@ -12,6 +13,7 @@ const {
   Events,
   GatewayIntentBits,
   MessageFlags,
+  PermissionFlagsBits,
   ModalBuilder,
   REST,
   Routes,
@@ -51,6 +53,22 @@ const ALERT_RAP_CENTER = BigInt(process.env.ALERT_RAP_CENTER || '4000000000');
 const ALERT_RAP_TOLERANCE = BigInt(process.env.ALERT_RAP_TOLERANCE || '100000000');
 const ALERT_MIN_RAP = BigInt(process.env.ALERT_MIN_RAP || '0');
 
+// Publiczny endpoint zgodny z typowym payloadem webhooka Discord.
+// W istniejącym skrypcie Roblox wklejasz adres DropVault zamiast adresu Discord webhooka.
+const RELAY_BODY_LIMIT_BYTES = Math.max(
+  16_384,
+  Number(process.env.RELAY_BODY_LIMIT_BYTES || 1_000_000),
+);
+const RELAY_DUPLICATE_WINDOW_MS = Math.max(
+  5_000,
+  Number(process.env.RELAY_DUPLICATE_WINDOW_MS || 30_000),
+);
+const PUBLIC_BASE_URL_RAW = String(
+  process.env.PUBLIC_BASE_URL
+  || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : ''),
+).replace(/\/+$/, '');
+const PORT = Math.max(1, Number(process.env.PORT || 3000));
+
 // Publiczne API PS99RAP. Bot korzysta z niego zamiast przepisywać cenę
 // z ostatniej wiadomości na Discordzie. Gdy API nie ma ceny lub chwilowo
 // nie odpowiada, bot automatycznie wraca do najnowszego RAP z kanału.
@@ -85,6 +103,7 @@ const DROP_CHANNELS = [
       || process.env.PAWEL_DROP_CHANNEL_ID
       || '1515437409653756005',
     alertUserId: process.env.PAWEL_ALERT_USER_ID || '1265797244074852576',
+    ingestSecret: process.env.PAWEL_INGEST_SECRET || process.env.INGEST_SECRET || '',
     emoji: '🟢',
     color: 0x57f287,
   },
@@ -96,6 +115,7 @@ const DROP_CHANNELS = [
       || process.env.RYZEN_DROP_CHANNEL_ID
       || '1524841513606189178',
     alertUserId: process.env.RYZEN_ALERT_USER_ID || '1330652001075335300',
+    ingestSecret: process.env.RYZEN_INGEST_SECRET || process.env.INGEST_SECRET || '',
     emoji: '🔵',
     color: 0x5865f2,
   },
@@ -140,6 +160,42 @@ const commands = [
   new SlashCommandBuilder()
     .setName('drop')
     .setDescription('Sprawdza dropy z wybranego kanału, konta, typu i okresu'),
+
+  new SlashCommandBuilder()
+    .setName('today')
+    .setDescription('Pokazuje dzisiejsze dropy od 00:00 do teraz')
+    .addStringOption((option) => addChannelChoices(option
+      .setName('kanal')
+      .setDescription('Kanał, z którego policzyć dzisiejsze dropy')
+      .setRequired(true)))
+    .addStringOption((option) => option
+      .setName('konto')
+      .setDescription('Konto Roblox; domyślnie wszystkie')
+      .setRequired(false)
+      .setAutocomplete(true))
+    .addStringOption((option) => option
+      .setName('typ')
+      .setDescription('Opcjonalny typ peta')
+      .setRequired(false)
+      .addChoices(
+        { name: 'Wszystkie', value: 'all' },
+        { name: 'Huge', value: 'huge' },
+        { name: 'Titanic', value: 'titanic' },
+        { name: 'Gargantuan', value: 'gargantuan' },
+      ))
+    .addStringOption((option) => addVariantChoices(option
+      .setName('wariant')
+      .setDescription('Opcjonalny wariant')
+      .setRequired(false))),
+
+  new SlashCommandBuilder()
+    .setName('webhookurl')
+    .setDescription('Pokazuje bezpieczny adres DropVault do wklejenia zamiast webhooka Discord')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addStringOption((option) => addChannelChoices(option
+      .setName('kanal')
+      .setDescription('Wybierz właściciela i kanał docelowy')
+      .setRequired(true))),
 
   new SlashCommandBuilder()
     .setName('pet')
@@ -222,6 +278,7 @@ const catalogByChannel = new Map();
 const paginationSessions = new Map();
 const dropFormSessions = new Map();
 const ps99RapPriceCache = new Map();
+const relayRecentPayloads = new Map();
 let ps99RapCatalog = {
   loadedAt: 0,
   entries: [],
@@ -253,6 +310,9 @@ function cleanupSessions() {
   }
   for (const [id, session] of dropFormSessions) {
     if (now - session.createdAt > SESSION_TTL_MS) dropFormSessions.delete(id);
+  }
+  for (const [hash, createdAt] of relayRecentPayloads) {
+    if (now - createdAt > RELAY_DUPLICATE_WINDOW_MS) relayRecentPayloads.delete(hash);
   }
 }
 
@@ -2018,11 +2078,141 @@ async function registerCommands() {
 
   if (GUILD_ID) {
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body });
-    console.log(`Zarejestrowano /drop, /pet i /petvalue na serwerze ${GUILD_ID}.`);
+    console.log(`Zarejestrowano /drop, /today, /webhookurl, /pet i /petvalue na serwerze ${GUILD_ID}.`);
   } else {
     await rest.put(Routes.applicationCommands(CLIENT_ID), { body });
-    console.log('Zarejestrowano globalne komendy /drop, /pet i /petvalue.');
+    console.log('Zarejestrowano globalne komendy /drop, /today, /webhookurl, /pet i /petvalue.');
   }
+}
+
+async function executeTodayCommand(interaction) {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const channelKey = interaction.options.getString('kanal', true);
+  const account = interaction.options.getString('konto')?.trim() || 'wszystkie';
+  const type = interaction.options.getString('typ') || 'all';
+  const variant = interaction.options.getString('wariant') || 'all';
+  const selection = getChannelSelection(channelKey);
+
+  if (!selection) {
+    await interaction.editReply('❌ Nie znaleziono wybranego kanału.');
+    return;
+  }
+
+  const now = DateTime.now().setZone(TIME_ZONE);
+  const from = now.startOf('day');
+  const to = now;
+  const result = await fetchDropsFromChannels(selection.ids, from.toMillis(), to.toMillis());
+  const filtered = result.drops.filter((drop) => (
+    (type === 'all' || drop.type === type)
+    && variantMatches(drop.item, variant)
+    && accountMatches(drop.account, account)
+  ));
+  const repriced = await repriceDrops(filtered, result.drops, selection.ids);
+
+  const itemCounts = new Map();
+  for (const drop of repriced.drops) {
+    const key = normalizeItemName(drop.item);
+    const current = itemCounts.get(key) || {
+      item: drop.item,
+      type: drop.type,
+      count: 0,
+      rap: drop.rap,
+      createdAt: drop.createdAt,
+    };
+    current.count += 1;
+    if (drop.createdAt > current.createdAt) {
+      current.item = drop.item;
+      current.type = drop.type;
+      current.rap = drop.rap;
+      current.createdAt = drop.createdAt;
+    }
+    itemCounts.set(key, current);
+  }
+
+  const itemGroups = [...itemCounts.values()].sort((a, b) => {
+    const hierarchy = compareByHierarchy(a, b);
+    if (hierarchy !== 0) return hierarchy;
+    return b.count - a.count;
+  });
+
+  const pageCount = Math.max(
+    1,
+    Math.ceil(repriced.drops.length / HISTORY_PAGE_SIZE),
+    Math.ceil(itemGroups.length / HISTORY_PAGE_SIZE),
+  );
+  const sessionId = createSessionId();
+  const session = {
+    id: sessionId,
+    kind: 'drop',
+    ownerId: interaction.user.id,
+    createdAt: Date.now(),
+    pageCount,
+    drops: repriced.drops,
+    itemGroups,
+    type,
+    variant,
+    account: isAllAccounts(account) ? 'wszystkie' : account,
+    channelLabel: `${selection.label} • DZISIAJ`,
+    from,
+    to,
+    scanned: result.scanned + repriced.scanned,
+    hitLimit: result.hitLimit || repriced.hitLimit,
+    channelsScanned: result.channelsScanned,
+    pricingFound: repriced.pricingFound,
+    pricingWanted: repriced.pricingWanted,
+    pricingFromPs99Rap: repriced.pricingFromPs99Rap,
+    pricingFallback: repriced.pricingFallback,
+    ps99RapErrors: repriced.ps99RapErrors,
+  };
+
+  paginationSessions.set(sessionId, session);
+  const rendered = renderPaginationSession(session, 0);
+  await interaction.editReply({ embeds: rendered.embeds, components: rendered.components });
+}
+
+function getPublicBaseUrl() {
+  return PUBLIC_BASE_URL_RAW || null;
+}
+
+function buildRelayUrl(channelConfig) {
+  const base = getPublicBaseUrl();
+  if (!base || !channelConfig?.ingestSecret) return null;
+  return `${base}/drop-webhook/${encodeURIComponent(channelConfig.key)}/${encodeURIComponent(channelConfig.ingestSecret)}`;
+}
+
+async function executeWebhookUrlCommand(interaction) {
+  const channelKey = interaction.options.getString('kanal', true);
+  if (channelKey === 'all') {
+    await interaction.reply({
+      content: '❌ Dla adresu webhooka wybierz osobno Pawła albo Ryzena.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const channelConfig = getChannelConfigByKey(channelKey);
+  const relayUrl = buildRelayUrl(channelConfig);
+  if (!getPublicBaseUrl()) {
+    await interaction.reply({
+      content: '❌ Brak publicznej domeny. Na Railway wejdź w **Settings → Networking → Generate Domain** albo ustaw `PUBLIC_BASE_URL`.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  if (!channelConfig?.ingestSecret) {
+    const variableName = channelKey === 'pawel' ? 'PAWEL_INGEST_SECRET' : 'RYZEN_INGEST_SECRET';
+    await interaction.reply({
+      content: `❌ Dodaj na Railway zmienną \`${variableName}\` z długim losowym hasłem i wykonaj Redeploy.`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await interaction.reply({
+    content: `${channelConfig.emoji} **Adres dla ${channelConfig.label}:**\n\n\`${relayUrl}\`\n\nWklej ten adres w istniejącym skrypcie Roblox **zamiast webhooka Discord**. Nie udostępniaj go innym — zawiera sekret.`,
+    flags: MessageFlags.Ephemeral,
+  });
 }
 
 async function executePetCommand(interaction) {
@@ -2294,6 +2484,243 @@ async function executePetValueCommand(interaction) {
 }
 
 // ============================================================
+// RELAY WEBHOOKA ROBLOX -> WIADOMOŚĆ BOTA
+// ============================================================
+
+function secureStringEquals(left, right) {
+  const leftBuffer = Buffer.from(String(left || ''));
+  const rightBuffer = Buffer.from(String(right || ''));
+  if (leftBuffer.length !== rightBuffer.length) return false;
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function readJsonRequest(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > RELAY_BODY_LIMIT_BYTES) {
+        reject(Object.assign(new Error('Payload too large'), { statusCode: 413 }));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    req.on('end', () => {
+      try {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        resolve({ raw, payload: JSON.parse(raw || '{}') });
+      } catch {
+        reject(Object.assign(new Error('Invalid JSON'), { statusCode: 400 }));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+function replaceRapInWebhookText(text, rap) {
+  const formatted = formatBigInt(rap);
+  return String(text || '').replace(
+    /(\*{0,2}RAP\s*:\*{0,2}\s*)(?:`[^`]*`|[0-9][0-9\s,._]*)/gi,
+    `$1\`${formatted}\``,
+  );
+}
+
+function clampText(value, max, fallback = '\u200b') {
+  const text = String(value ?? '').trim();
+  if (!text) return fallback;
+  return text.length <= max ? text : `${text.slice(0, max - 3)}...`;
+}
+
+async function getCurrentRapForRelay(drop) {
+  try {
+    await refreshPs99RapCatalog();
+    const resolved = resolvePs99RapCatalogEntry(drop.item);
+    if (resolved.entry) {
+      const current = await fetchPs99RapCurrentById(resolved.entry.id, resolved.entry.name);
+      if (current?.rap > 0n) return current;
+    }
+
+    const bulk = await fetchPs99RapPrices([drop.item]);
+    const price = bulk.prices.get(normalizeItemName(drop.item));
+    if (price?.rap > 0n) return price;
+  } catch (error) {
+    console.error('Relay: nie udało się pobrać bieżącego RAP:', error);
+  }
+
+  return {
+    item: drop.item,
+    rap: drop.rap,
+    source: 'incoming',
+    sourceUrl: null,
+  };
+}
+
+function buildRelayedDropEmbed(rawEmbed, drop, currentPrice, channelConfig) {
+  const currentRap = currentPrice?.rap > 0n ? currentPrice.rap : drop.rap;
+  const builder = new EmbedBuilder()
+    .setColor(Number.isInteger(rawEmbed?.color) ? rawEmbed.color : channelConfig.color)
+    .setTimestamp();
+
+  if (rawEmbed?.title) builder.setTitle(clampText(rawEmbed.title, 256));
+  if (rawEmbed?.description) {
+    builder.setDescription(clampText(replaceRapInWebhookText(rawEmbed.description, currentRap), 4096));
+  }
+
+  let rapWasPresent = /\bRAP\s*:/i.test(String(rawEmbed?.description || ''));
+  const fields = Array.isArray(rawEmbed?.fields)
+    ? rawEmbed.fields.slice(0, 25).map((field) => {
+      const originalValue = String(field?.value || '');
+      if (/\bRAP\s*:/i.test(originalValue) || /\bRAP\b/i.test(String(field?.name || ''))) {
+        rapWasPresent = true;
+      }
+      return {
+        name: clampText(field?.name, 256),
+        value: clampText(replaceRapInWebhookText(originalValue, currentRap), 1024),
+        inline: Boolean(field?.inline),
+      };
+    })
+    : [];
+
+  if (!rapWasPresent && fields.length < 25) {
+    fields.push({ name: '💎 Aktualny RAP', value: `\`${formatBigInt(currentRap)}\``, inline: true });
+  }
+  if (fields.length) builder.addFields(fields);
+
+  const thumbnailUrl = rawEmbed?.thumbnail?.url || drop.thumbnail;
+  if (thumbnailUrl && /^https?:\/\//i.test(thumbnailUrl)) builder.setThumbnail(thumbnailUrl);
+
+  const source = currentPrice?.source === 'ps99rap' ? 'PS99RAP' : 'RAP przesłany przez skrypt';
+  builder.setFooter({
+    text: `DropVault • ${channelConfig.label} • aktualna cena: ${source}`,
+  });
+
+  return builder;
+}
+
+async function processRelayPayload(channelConfig, payload, rawBody) {
+  const embeds = Array.isArray(payload?.embeds) ? payload.embeds : [];
+  const fakeMessage = {
+    id: crypto.randomUUID(),
+    guildId: null,
+    createdTimestamp: Date.now(),
+    channelId: channelConfig.id,
+  };
+
+  let rawEmbed = null;
+  let drop = null;
+  for (const candidate of embeds) {
+    const parsed = parseDropFromEmbed(candidate, fakeMessage);
+    if (parsed) {
+      rawEmbed = candidate;
+      drop = parsed;
+      break;
+    }
+  }
+  if (!drop || !rawEmbed) throw Object.assign(new Error('Nie znaleziono Item / In Account w embedzie.'), { statusCode: 422 });
+
+  const hash = crypto
+    .createHash('sha256')
+    .update(`${channelConfig.key}:${rawBody}`)
+    .digest('hex');
+  const previous = relayRecentPayloads.get(hash);
+  if (previous && Date.now() - previous < RELAY_DUPLICATE_WINDOW_MS) {
+    return { duplicate: true, item: drop.item };
+  }
+  relayRecentPayloads.set(hash, Date.now());
+
+  const currentPrice = await getCurrentRapForRelay(drop);
+  const embed = buildRelayedDropEmbed(rawEmbed, drop, currentPrice, channelConfig);
+  const channel = await getTextChannel(channelConfig.id);
+  const sent = await channel.send({
+    content: '',
+    embeds: [embed],
+    allowedMentions: { parse: [] },
+  });
+
+  return {
+    duplicate: false,
+    item: drop.item,
+    rap: currentPrice?.rap > 0n ? currentPrice.rap : drop.rap,
+    messageId: sent.id,
+  };
+}
+
+function sendJson(res, statusCode, body) {
+  const json = JSON.stringify(body);
+  res.writeHead(statusCode, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(json),
+    'Cache-Control': 'no-store',
+  });
+  res.end(json);
+}
+
+function startRelayServer() {
+  const server = http.createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url || '/', 'http://localhost');
+
+      if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/health')) {
+        sendJson(res, 200, {
+          ok: true,
+          service: 'DropVault',
+          discordReady: client.isReady(),
+          relayConfigured: DROP_CHANNELS.filter((entry) => entry.ingestSecret).map((entry) => entry.key),
+        });
+        return;
+      }
+
+      const match = url.pathname.match(/^\/drop-webhook\/([^/]+)\/([^/]+)$/);
+      if (req.method !== 'POST' || !match) {
+        sendJson(res, 404, { ok: false, error: 'not_found' });
+        return;
+      }
+      if (!client.isReady()) {
+        sendJson(res, 503, { ok: false, error: 'discord_not_ready' });
+        return;
+      }
+
+      const channelKey = decodeURIComponent(match[1]);
+      const suppliedSecret = decodeURIComponent(match[2]);
+      const channelConfig = getChannelConfigByKey(channelKey);
+      if (!channelConfig?.ingestSecret || !secureStringEquals(suppliedSecret, channelConfig.ingestSecret)) {
+        sendJson(res, 401, { ok: false, error: 'invalid_secret' });
+        return;
+      }
+
+      const { raw, payload } = await readJsonRequest(req);
+      const result = await processRelayPayload(channelConfig, payload, raw);
+      sendJson(res, result.duplicate ? 200 : 201, {
+        ok: true,
+        duplicate: result.duplicate,
+        item: result.item,
+        rap: result.rap == null ? undefined : result.rap.toString(),
+      });
+    } catch (error) {
+      console.error('Błąd relay webhooka:', error);
+      sendJson(res, error.statusCode || 500, {
+        ok: false,
+        error: error.message || 'internal_error',
+      });
+    }
+  });
+
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`DropVault HTTP relay działa na 0.0.0.0:${PORT}`);
+    for (const channelConfig of DROP_CHANNELS) {
+      const relayUrl = buildRelayUrl(channelConfig);
+      if (relayUrl) console.log(`${channelConfig.label} relay: ${relayUrl}`);
+    }
+  });
+}
+
+startRelayServer();
+
+// ============================================================
 // EVENTY DISCORDA
 // ============================================================
 
@@ -2312,7 +2739,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   startPs99RapCatalogRefresh();
   await warmCatalogAndRecords();
   alertsReady = true;
-  console.log('DropVault jest gotowy: pełny katalog PS99RAP, alerty, rekordy, raport 23:59 i autocomplete aktywne.');
+  console.log('DropVault jest gotowy: /today, relay webhooków, PS99RAP, alerty, rekordy, raport 23:59 i autocomplete aktywne.');
 });
 
 client.on(Events.MessageCreate, async (message) => {
@@ -2351,6 +2778,16 @@ client.on(Events.InteractionCreate, async (interaction) => {
         components: [new ActionRowBuilder().addComponents(channelSelect)],
         flags: MessageFlags.Ephemeral,
       });
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'today') {
+      await executeTodayCommand(interaction);
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'webhookurl') {
+      await executeWebhookUrlCommand(interaction);
       return;
     }
 
