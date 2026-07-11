@@ -160,3 +160,15 @@ npm start
 ```
 
 Railway automatycznie użyje dołączonego `Dockerfile`.
+
+## Pełny katalog petów PS99RAP
+
+Komenda `/petvalue` nie pobiera już nazw tylko z kanałów dropów. Przy starcie bot pobiera pełny indeks `/api/search` oraz metadane `/api/meta` z PS99RAP, więc wyszukiwane są również Titaniki, Huge i Gargantuany, które nigdy nie pojawiły się na kanałach Pawła lub Ryzena.
+
+Discord pokazuje maksymalnie 25 podpowiedzi naraz. Wszystkie pety są jednak przeszukiwane — po wpisaniu kolejnych liter pojawi się szukany pet. Dodatkowe pola `typ` i `wariant` zawężają podpowiedzi. Autouzupełnianie przekazuje dokładne ID przedmiotu z PS99RAP, dzięki czemu warianty nie są mylone.
+
+Przykład:
+
+```text
+/petvalue typ:Titanic wariant:Wszystkie warianty nazwa:Titanic Goal... okres:Ostatnie 30 dni
+```

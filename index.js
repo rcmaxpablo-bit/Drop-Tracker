@@ -71,6 +71,10 @@ const PS99RAP_BULK_CHUNK_SIZE = Math.max(
   1,
   Math.min(75, Number(process.env.PS99RAP_BULK_CHUNK_SIZE || 40)),
 );
+const PS99RAP_CATALOG_TTL_MS = Math.max(
+  5 * 60_000,
+  Number(process.env.PS99RAP_CATALOG_TTL_MS || 30 * 60_000),
+);
 
 const DROP_CHANNELS = [
   {
@@ -176,6 +180,20 @@ const commands = [
       .setRequired(true)
       .setAutocomplete(true))
     .addStringOption((option) => option
+      .setName('typ')
+      .setDescription('Opcjonalnie zawęź podpowiedzi do typu peta')
+      .setRequired(false)
+      .addChoices(
+        { name: 'Wszystkie typy', value: 'all' },
+        { name: 'Huge', value: 'huge' },
+        { name: 'Titanic', value: 'titanic' },
+        { name: 'Gargantuan', value: 'gargantuan' },
+      ))
+    .addStringOption((option) => addVariantChoices(option
+      .setName('wariant')
+      .setDescription('Opcjonalnie zawęź podpowiedzi do wariantu')
+      .setRequired(false)))
+    .addStringOption((option) => option
       .setName('okres')
       .setDescription('Zakres historii; własne daty mają pierwszeństwo')
       .setRequired(false)
@@ -204,6 +222,15 @@ const catalogByChannel = new Map();
 const paginationSessions = new Map();
 const dropFormSessions = new Map();
 const ps99RapPriceCache = new Map();
+let ps99RapCatalog = {
+  loadedAt: 0,
+  entries: [],
+  byId: new Map(),
+  byNormalizedId: new Map(),
+  byNormalizedName: new Map(),
+};
+let ps99RapCatalogLoading = null;
+let ps99RapCatalogTimer = null;
 let alertsReady = false;
 let schedulerStarted = false;
 
@@ -430,7 +457,7 @@ async function fetchJsonWithTimeout(url) {
       method: 'GET',
       headers: {
         Accept: 'application/json',
-        'User-Agent': 'DropVault-Discord-Bot/2.1 (+PS99RAP credit)',
+        'User-Agent': 'DropVault-Discord-Bot/2.3 (+PS99RAP credit)',
       },
       signal: controller.signal,
     });
@@ -450,6 +477,172 @@ function unwrapApiData(payload) {
     return payload.data;
   }
   return payload;
+}
+
+function isPs99RapCatalogFresh() {
+  return ps99RapCatalog.entries.length > 0
+    && Date.now() - ps99RapCatalog.loadedAt < PS99RAP_CATALOG_TTL_MS;
+}
+
+function normalizePs99RapTier(value, itemName) {
+  const tier = String(value || '').toLowerCase();
+  if (['huge', 'titanic', 'gargantuan'].includes(tier)) return tier;
+  return detectType(itemName);
+}
+
+function normalizePs99RapVariant(value, itemName) {
+  const variant = String(value || '').toLowerCase();
+  if (['normal', 'golden', 'rainbow', 'shiny', 'shiny_golden', 'shiny_rainbow'].includes(variant)) {
+    return variant;
+  }
+  return detectVariant(itemName);
+}
+
+async function refreshPs99RapCatalog(force = false) {
+  if (!PS99RAP_ENABLED) return ps99RapCatalog;
+  if (!force && isPs99RapCatalogFresh()) return ps99RapCatalog;
+  if (ps99RapCatalogLoading) return ps99RapCatalogLoading;
+
+  ps99RapCatalogLoading = (async () => {
+    const searchUrl = new URL('/api/search', `${PS99RAP_BASE_URL}/`);
+    const metaUrl = new URL('/api/meta', `${PS99RAP_BASE_URL}/`);
+
+    try {
+      const [searchPayloadRaw, metaPayloadRaw] = await Promise.all([
+        fetchJsonWithTimeout(searchUrl),
+        fetchJsonWithTimeout(metaUrl).catch((error) => {
+          console.warn('PS99RAP meta API chwilowo niedostępne:', error.message || error);
+          return {};
+        }),
+      ]);
+
+      const searchPayload = unwrapApiData(searchPayloadRaw);
+      const metaPayload = unwrapApiData(metaPayloadRaw);
+      const searchObject = searchPayload && typeof searchPayload === 'object' ? searchPayload : {};
+      const metaObject = metaPayload && typeof metaPayload === 'object' ? metaPayload : {};
+
+      const entries = [];
+      const byId = new Map();
+      const byNormalizedId = new Map();
+      const byNormalizedName = new Map();
+
+      for (const [itemId, rawName] of Object.entries(searchObject)) {
+        const itemName = typeof rawName === 'string'
+          ? rawName
+          : String(rawName?.name || rawName?.display_name || '').trim();
+        if (!itemId || !itemName) continue;
+
+        const meta = metaObject[itemId] || {};
+        const entry = {
+          id: itemId,
+          name: itemName,
+          tier: normalizePs99RapTier(meta.t, itemName),
+          variant: normalizePs99RapVariant(meta.v, itemName),
+        };
+
+        entries.push(entry);
+        byId.set(itemId, entry);
+        byNormalizedId.set(normalizePs99RapItemId(itemId), entry);
+
+        const nameKey = normalizeItemName(itemName);
+        const sameName = byNormalizedName.get(nameKey) || [];
+        sameName.push(entry);
+        byNormalizedName.set(nameKey, sameName);
+      }
+
+      entries.sort((a, b) => a.name.localeCompare(b.name, 'en'));
+      ps99RapCatalog = {
+        loadedAt: Date.now(),
+        entries,
+        byId,
+        byNormalizedId,
+        byNormalizedName,
+      };
+
+      const petCount = entries.filter((entry) => entry.tier).length;
+      const titanicCount = entries.filter((entry) => entry.tier === 'titanic').length;
+      console.log(`PS99RAP katalog: ${entries.length} przedmiotów, ${petCount} petów tierowych, ${titanicCount} Titaniców.`);
+      return ps99RapCatalog;
+    } catch (error) {
+      console.error('Nie udało się pobrać pełnego katalogu PS99RAP:', error.message || error);
+      return ps99RapCatalog;
+    } finally {
+      ps99RapCatalogLoading = null;
+    }
+  })();
+
+  return ps99RapCatalogLoading;
+}
+
+function startPs99RapCatalogRefresh() {
+  if (ps99RapCatalogTimer) return;
+  ps99RapCatalogTimer = setInterval(() => {
+    refreshPs99RapCatalog(true).catch((error) => {
+      console.error('Błąd odświeżania katalogu PS99RAP:', error);
+    });
+  }, PS99RAP_CATALOG_TTL_MS);
+  ps99RapCatalogTimer.unref?.();
+}
+
+function getPs99RapAutocompleteChoices(query, typeFilter = 'all', variantFilter = 'all') {
+  const normalizedQuery = normalizeItemName(query);
+  let entries = ps99RapCatalog.entries;
+
+  if (typeFilter !== 'all') entries = entries.filter((entry) => entry.tier === typeFilter);
+  if (variantFilter !== 'all') entries = entries.filter((entry) => entry.variant === variantFilter);
+
+  if (normalizedQuery) {
+    entries = entries.filter((entry) => (
+      normalizeItemName(entry.name).includes(normalizedQuery)
+      || normalizePs99RapItemId(entry.id).includes(normalizedQuery)
+    ));
+  } else {
+    // Bez wpisanego tekstu pokazujemy najpierw najrzadsze pety zamiast losowych przedmiotów.
+    entries = entries.filter((entry) => entry.tier);
+  }
+
+  const tierRank = { gargantuan: 0, titanic: 1, huge: 2, null: 3 };
+  return entries
+    .sort((a, b) => {
+      const aName = normalizeItemName(a.name);
+      const bName = normalizeItemName(b.name);
+      const aStarts = normalizedQuery && aName.startsWith(normalizedQuery) ? 0 : 1;
+      const bStarts = normalizedQuery && bName.startsWith(normalizedQuery) ? 0 : 1;
+      if (aStarts !== bStarts) return aStarts - bStarts;
+      const aTier = tierRank[a.tier] ?? 3;
+      const bTier = tierRank[b.tier] ?? 3;
+      if (aTier !== bTier) return aTier - bTier;
+      return a.name.localeCompare(b.name, 'en');
+    })
+    .slice(0, 25)
+    .map((entry) => ({
+      name: entry.name.slice(0, 100),
+      value: entry.id.slice(0, 100),
+    }));
+}
+
+function resolvePs99RapCatalogEntry(rawValue) {
+  const value = String(rawValue || '').trim();
+  if (!value) return { entry: null, matches: [] };
+
+  const directId = ps99RapCatalog.byId.get(value);
+  if (directId) return { entry: directId, matches: [directId] };
+
+  const normalizedId = normalizePs99RapItemId(value);
+  const idMatch = ps99RapCatalog.byNormalizedId.get(normalizedId);
+  if (idMatch) return { entry: idMatch, matches: [idMatch] };
+
+  const normalizedName = normalizeItemName(value);
+  const exactNameMatches = ps99RapCatalog.byNormalizedName.get(normalizedName) || [];
+  if (exactNameMatches.length === 1) return { entry: exactNameMatches[0], matches: exactNameMatches };
+  if (exactNameMatches.length > 1) return { entry: null, matches: exactNameMatches };
+
+  const partialMatches = ps99RapCatalog.entries.filter((entry) => (
+    normalizeItemName(entry.name).includes(normalizedName)
+    || normalizePs99RapItemId(entry.id).includes(normalizedName)
+  ));
+  if (partialMatches.length === 1) return { entry: partialMatches[0], matches: partialMatches };
+  return { entry: null, matches: partialMatches };
 }
 
 function parsePs99RapTimestamp(raw) {
@@ -562,10 +755,10 @@ async function fetchPs99RapPrices(itemNames) {
   };
 }
 
-async function fetchPs99RapHistory(itemName) {
+async function fetchPs99RapHistory(itemName, explicitItemId = null) {
   if (!PS99RAP_ENABLED) return { history: [], itemId: null, sourceUrl: null, error: null };
 
-  const itemId = toPs99RapItemId(itemName);
+  const itemId = explicitItemId || toPs99RapItemId(itemName);
   const url = new URL(`/api/item/${encodeURIComponent(itemId)}/rap_history`, `${PS99RAP_BASE_URL}/`);
 
   try {
@@ -603,6 +796,30 @@ async function fetchPs99RapHistory(itemName) {
       sourceUrl: buildPs99RapItemUrl(itemId),
       error,
     };
+  }
+}
+
+async function fetchPs99RapCurrentById(itemId, itemName) {
+  if (!PS99RAP_ENABLED || !itemId) return null;
+  const url = new URL(`/api/item/${encodeURIComponent(itemId)}`, `${PS99RAP_BASE_URL}/`);
+
+  try {
+    const payload = unwrapApiData(await fetchJsonWithTimeout(url));
+    const rap = parseRap(payload?.rap);
+    if (rap <= 0n) return null;
+    return {
+      item: itemName,
+      itemId,
+      rap,
+      exists: payload?.exists == null ? null : Number(payload.exists),
+      source: 'ps99rap',
+      sourceUrl: buildPs99RapItemUrl(itemId),
+      fetchedAt: Date.now(),
+      cachedAt: Date.now(),
+    };
+  } catch (error) {
+    console.error(`PS99RAP item API error (${itemId}):`, error.message || error);
+    return null;
   }
 }
 
@@ -1764,6 +1981,20 @@ async function handleAutocomplete(interaction) {
   const catalog = getCombinedCatalog(channelKey);
 
   if (focused.name === 'nazwa') {
+    if (interaction.commandName === 'petvalue') {
+      if (!isPs99RapCatalogFresh()) {
+        refreshPs99RapCatalog().catch(() => {});
+      }
+
+      const typeFilter = interaction.options.getString('typ') || 'all';
+      const variantFilter = interaction.options.getString('wariant') || 'all';
+      const psChoices = getPs99RapAutocompleteChoices(focused.value, typeFilter, variantFilter);
+      if (psChoices.length > 0) {
+        await interaction.respond(psChoices);
+        return;
+      }
+    }
+
     await interaction.respond(autocompleteChoices([...catalog.items.values()], focused.value));
     return;
   }
@@ -1953,23 +2184,23 @@ async function executePetValueCommand(interaction) {
     return;
   }
 
-  // Nazwa jest ustalana z katalogu obu kanałów wyłącznie dla autouzupełniania.
-  // Sama historia i wycena pochodzą już tylko z PS99RAP.
-  const catalog = getCombinedCatalog('all');
-  const names = [...catalog.items.values()];
-  const exactName = names.find((name) => normalizeItemName(name) === query);
-  const partialNames = names.filter((name) => normalizeItemName(name).includes(query));
+  // /petvalue korzysta z pełnego katalogu PS99RAP, a nie tylko z petów,
+  // które pojawiły się wcześniej na kanałach Pawła lub Ryzena.
+  await refreshPs99RapCatalog();
+  const resolved = resolvePs99RapCatalogEntry(queryRaw);
 
-  if (!exactName && partialNames.length > 1) {
-    const examples = partialNames.slice(0, 8).map((name) => `• ${name}`).join('\n');
+  if (!resolved.entry && resolved.matches.length > 1) {
+    const examples = resolved.matches.slice(0, 10).map((entry) => `• ${entry.name}`).join('\n');
     await interaction.editReply(
-      `❌ Ta część nazwy pasuje do kilku petów. Wybierz pełną nazwę z autouzupełniania:\n${examples}`,
+      `❌ Ta część nazwy pasuje do kilku przedmiotów. Dopisz więcej liter albo wybierz pełną nazwę z podpowiedzi:\n${examples}`,
     );
     return;
   }
 
-  const displayName = exactName || partialNames[0] || queryRaw;
-  const ps99RapHistory = await fetchPs99RapHistory(displayName);
+  const selectedEntry = resolved.entry;
+  const displayName = selectedEntry?.name || queryRaw;
+  const exactItemId = selectedEntry?.id || toPs99RapItemId(displayName);
+  const ps99RapHistory = await fetchPs99RapHistory(displayName, exactItemId);
 
   if (ps99RapHistory.error) {
     await interaction.editReply(
@@ -2009,10 +2240,9 @@ async function executePetValueCommand(interaction) {
 
   // Dopisz bieżący RAP z PS99RAP, jeżeli różni się od ostatniego zapisu historii.
   const rangeIncludesToday = effectiveTo.toMillis() >= now.startOf('day').toMillis();
-  const currentPriceResult = rangeIncludesToday
-    ? await fetchPs99RapPrices([displayName])
-    : { prices: new Map() };
-  const currentPrice = currentPriceResult.prices.get(normalizeItemName(displayName));
+  const currentPrice = rangeIncludesToday
+    ? await fetchPs99RapCurrentById(exactItemId, displayName)
+    : null;
   if (currentPrice?.rap > 0n) {
     const previous = chronologicalChanges[chronologicalChanges.length - 1];
     if (!previous || previous.rap !== currentPrice.rap) {
@@ -2078,9 +2308,11 @@ client.once(Events.ClientReady, async (readyClient) => {
   }
 
   startScheduler();
+  await refreshPs99RapCatalog();
+  startPs99RapCatalogRefresh();
   await warmCatalogAndRecords();
   alertsReady = true;
-  console.log('DropVault jest gotowy: PS99RAP, alerty, rekordy, raport 23:59 i autocomplete aktywne.');
+  console.log('DropVault jest gotowy: pełny katalog PS99RAP, alerty, rekordy, raport 23:59 i autocomplete aktywne.');
 });
 
 client.on(Events.MessageCreate, async (message) => {
