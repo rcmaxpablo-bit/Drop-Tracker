@@ -2690,12 +2690,56 @@ function buildDailyReportEmbeds(channelConfig, reportDate, drops, metadata) {
   return embeds;
 }
 
+function countEmbedCharacters(embed) {
+  const data = typeof embed?.toJSON === 'function' ? embed.toJSON() : (embed || {});
+  let total = 0;
+
+  total += String(data.title || '').length;
+  total += String(data.description || '').length;
+  total += String(data.footer?.text || '').length;
+  total += String(data.author?.name || '').length;
+
+  for (const field of data.fields || []) {
+    total += String(field.name || '').length;
+    total += String(field.value || '').length;
+  }
+
+  return total;
+}
+
 async function sendEmbedsInBatches(channel, embeds, content = undefined) {
-  for (let index = 0; index < embeds.length; index += 10) {
-    const batch = embeds.slice(index, index + 10);
+  // Discord pozwala na maksymalnie 10 embedów w jednej wiadomości, ale ich
+  // ŁĄCZNA zawartość nie może przekroczyć 6000 znaków. Poprzednia wersja
+  // grupowała po 10 embedów bez sprawdzania rozmiaru, dlatego długie raporty
+  // Plaza kończyły się błędem embeds[MAX_EMBED_SIZE_EXCEEDED].
+  const MAX_EMBEDS_PER_MESSAGE = 10;
+  const SAFE_TOTAL_EMBED_CHARACTERS = 5800;
+  const batches = [];
+  let currentBatch = [];
+  let currentCharacters = 0;
+
+  for (const embed of embeds) {
+    const embedCharacters = countEmbedCharacters(embed);
+    const wouldExceedCount = currentBatch.length >= MAX_EMBEDS_PER_MESSAGE;
+    const wouldExceedCharacters = currentBatch.length > 0
+      && currentCharacters + embedCharacters > SAFE_TOTAL_EMBED_CHARACTERS;
+
+    if (wouldExceedCount || wouldExceedCharacters) {
+      batches.push(currentBatch);
+      currentBatch = [];
+      currentCharacters = 0;
+    }
+
+    currentBatch.push(embed);
+    currentCharacters += embedCharacters;
+  }
+
+  if (currentBatch.length) batches.push(currentBatch);
+
+  for (let index = 0; index < batches.length; index += 1) {
     await channel.send({
       ...(index === 0 && content ? { content } : {}),
-      embeds: batch,
+      embeds: batches[index],
       allowedMentions: { parse: [] },
     });
   }
