@@ -123,6 +123,30 @@ const DROP_CHANNELS = [
 ];
 
 
+const PLAZA_CHANNELS = [
+  {
+    key: 'pawel',
+    label: 'Plaza Paweł',
+    id: process.env.PAWEL_PLAZA_CHANNEL_ID || '1524784522154213397',
+    reportChannelId: process.env.PAWEL_PLAZA_REPORT_CHANNEL_ID
+      || process.env.PAWEL_PLAZA_CHANNEL_ID
+      || '1524784522154213397',
+    emoji: '🟢',
+    color: 0x57f287,
+  },
+  {
+    key: 'ryzen',
+    label: 'Plaza Ryzen',
+    id: process.env.RYZEN_PLAZA_CHANNEL_ID || '1524841567028903966',
+    reportChannelId: process.env.RYZEN_PLAZA_REPORT_CHANNEL_ID
+      || process.env.RYZEN_PLAZA_CHANNEL_ID
+      || '1524841567028903966',
+    emoji: '🔵',
+    color: 0x5865f2,
+  },
+];
+
+
 const SERVER_PANELS = [
   {
     key: 'pawel',
@@ -186,6 +210,18 @@ const commands = [
   new SlashCommandBuilder()
     .setName('petvalue')
     .setDescription('Otwiera formularz historii RAP z PS99RAP'),
+
+  new SlashCommandBuilder()
+    .setName('bestbuys')
+    .setDescription('Najlepsze zakupy z Trading Plaza według aktualnego RAP'),
+
+  new SlashCommandBuilder()
+    .setName('plazaitem')
+    .setDescription('Statystyki i historia konkretnego przedmiotu z Trading Plaza'),
+
+  new SlashCommandBuilder()
+    .setName('plazatime')
+    .setDescription('Sprawdza najlepsze godziny zakupów na Trading Plaza'),
 ];
 
 // ============================================================
@@ -211,6 +247,7 @@ let schedulerStarted = false;
 
 let state = {
   dailyReports: {},
+  dailyPlazaReports: {},
   records: {},
   processedMessageIds: [],
   serverPanelMessages: {},
@@ -249,6 +286,7 @@ function loadState() {
       const parsed = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
       state = {
         dailyReports: parsed.dailyReports || {},
+        dailyPlazaReports: parsed.dailyPlazaReports || {},
         records: parsed.records || {},
         processedMessageIds: Array.isArray(parsed.processedMessageIds)
           ? parsed.processedMessageIds.slice(-5000)
@@ -340,6 +378,28 @@ function getChannelSelection(channelKey) {
   };
 }
 
+
+function getPlazaChannelConfigByKey(channelKey) {
+  return PLAZA_CHANNELS.find((entry) => entry.key === channelKey) || null;
+}
+
+function getPlazaChannelConfigById(channelId) {
+  return PLAZA_CHANNELS.find((entry) => entry.id === channelId) || null;
+}
+
+function getPlazaChannelSelection(channelKey) {
+  if (channelKey === 'all') {
+    return {
+      label: 'Obie Plazy',
+      ids: PLAZA_CHANNELS.map((channel) => channel.id),
+    };
+  }
+
+  const channel = getPlazaChannelConfigByKey(channelKey);
+  if (!channel) return null;
+  return { label: channel.label, ids: [channel.id] };
+}
+
 function getChannelLabelById(channelId) {
   return getChannelConfigById(channelId)?.label || channelId;
 }
@@ -416,6 +476,24 @@ function modalChannelOptions(allowAll = true) {
       value: 'all',
       emoji: '📡',
       description: 'Łączy dropy Pawła i Ryzena',
+    });
+  }
+  return options;
+}
+
+
+function modalPlazaChannelOptions(allowAll = true) {
+  const options = PLAZA_CHANNELS.map((channel) => ({
+    label: channel.label,
+    value: channel.key,
+    emoji: channel.emoji,
+  }));
+  if (allowAll) {
+    options.push({
+      label: 'Obie Plazy',
+      value: 'all',
+      emoji: '⛱️',
+      description: 'Łączy zakupy Pawła i Ryzena',
     });
   }
   return options;
@@ -579,6 +657,117 @@ function buildWebhookUrlFormModal(userId) {
         'DLA KOGO?',
         'Wybierz osobny kanał Pawła albo Ryzena.',
         makeStringSelect('form_channel', 'Wybierz kanał', modalChannelOptions(false), 'pawel'),
+      ),
+    );
+}
+
+
+function buildBestBuysFormModal(userId) {
+  const today = DateTime.now().setZone(TIME_ZONE).toFormat('dd.MM.yyyy');
+  const sortOptions = [
+    { label: 'Największy aktualny profit', value: 'profit', emoji: '💎' },
+    { label: 'Największy profit procentowy', value: 'percent', emoji: '📈' },
+    { label: 'Najwięcej sztuk', value: 'quantity', emoji: '📦' },
+    { label: 'Największa różnica do RAP', value: 'discount', emoji: '🏷️' },
+  ];
+
+  return new ModalBuilder()
+    .setCustomId(`form:bestbuys:${userId}`)
+    .setTitle('Najlepsze zakupy Plaza')
+    .addLabelComponents(
+      makeSelectLabel(
+        'KANAŁ PLAZA',
+        'Wybierz Pawła, Ryzena albo obie Plazy.',
+        makeStringSelect('form_channel', 'Wybierz kanał', modalPlazaChannelOptions(true), 'pawel'),
+      ),
+      makeSelectLabel(
+        'SORTOWANIE',
+        'Wyniki są przeliczane według aktualnego RAP z PS99RAP.',
+        makeStringSelect('form_sort', 'Wybierz sposób sortowania', sortOptions, 'profit'),
+      ),
+      makeTextLabel(
+        'DATA OD - DATA DO',
+        'Format: DD.MM.RRRR - DD.MM.RRRR',
+        'form_dates',
+        `${today} - ${today}`,
+        { required: true, value: `${today} - ${today}`, maxLength: 25 },
+      ),
+      makeTextLabel(
+        'PRZEDMIOT (OPCJONALNIE)',
+        'Fragment nazwy, np. Mini Chest. Puste = wszystkie.',
+        'form_item',
+        'np. Mini Chest',
+        { required: false, maxLength: 100 },
+      ),
+      makeTextLabel(
+        'KONTO (OPCJONALNIE)',
+        'Nick Roblox. Puste = wszystkie konta.',
+        'form_account',
+        'np. ps99alts23',
+        { required: false, maxLength: 100 },
+      ),
+    );
+}
+
+function buildPlazaItemFormModal(userId) {
+  const today = DateTime.now().setZone(TIME_ZONE).toFormat('dd.MM.yyyy');
+  return new ModalBuilder()
+    .setCustomId(`form:plazaitem:${userId}`)
+    .setTitle('Historia przedmiotu Plaza')
+    .addLabelComponents(
+      makeTextLabel(
+        'NAZWA PRZEDMIOTU',
+        'Pełna nazwa albo fragment, np. Mini Chest.',
+        'form_item',
+        'np. Mini Chest',
+        { required: true, minLength: 2, maxLength: 100 },
+      ),
+      makeSelectLabel(
+        'KANAŁ PLAZA',
+        'Wybierz Pawła, Ryzena albo obie Plazy.',
+        makeStringSelect('form_channel', 'Wybierz kanał', modalPlazaChannelOptions(true), 'pawel'),
+      ),
+      makeTextLabel(
+        'DATA OD - DATA DO',
+        'Format: DD.MM.RRRR - DD.MM.RRRR',
+        'form_dates',
+        `${today} - ${today}`,
+        { required: true, value: `${today} - ${today}`, maxLength: 25 },
+      ),
+      makeTextLabel(
+        'KONTO (OPCJONALNIE)',
+        'Nick Roblox. Puste = wszystkie konta.',
+        'form_account',
+        'np. ps99alts23',
+        { required: false, maxLength: 100 },
+      ),
+    );
+}
+
+function buildPlazaTimeFormModal(userId) {
+  const today = DateTime.now().setZone(TIME_ZONE).toFormat('dd.MM.yyyy');
+  return new ModalBuilder()
+    .setCustomId(`form:plazatime:${userId}`)
+    .setTitle('Godziny zakupów Plaza')
+    .addLabelComponents(
+      makeSelectLabel(
+        'KANAŁ PLAZA',
+        'Wybierz Pawła, Ryzena albo obie Plazy.',
+        makeStringSelect('form_channel', 'Wybierz kanał', modalPlazaChannelOptions(true), 'pawel'),
+      ),
+      makeTextLabel(
+        'DATA OD - DATA DO',
+        'Format: DD.MM.RRRR - DD.MM.RRRR',
+        'form_dates',
+        `${today} - ${today}`,
+        { required: true, value: `${today} - ${today}`, maxLength: 25 },
+      ),
+      makeTextLabel(
+        'KONTO (OPCJONALNIE)',
+        'Nick Roblox. Puste = wszystkie konta.',
+        'form_account',
+        'np. ps99alts23',
+        { required: false, maxLength: 100 },
       ),
     );
 }
@@ -907,10 +1096,11 @@ async function fetchPs99RapPrices(itemNames) {
   for (const itemName of itemNames) {
     const itemKey = normalizeItemName(itemName);
     if (!itemKey || unique.has(itemKey)) continue;
+    const resolvedCatalog = resolvePs99RapCatalogEntry(itemName);
     unique.set(itemKey, {
       itemKey,
       itemName,
-      itemId: toPs99RapItemId(itemName),
+      itemId: resolvedCatalog.entry?.id || toPs99RapItemId(itemName),
     });
   }
 
@@ -1513,6 +1703,246 @@ async function repriceDrops(drops, allFetchedDrops, channelIds) {
   };
 }
 
+
+// ============================================================
+// TRADING PLAZA — PARSOWANIE, POBIERANIE I AKTUALNY RAP
+// ============================================================
+
+function extractExactLabeledValue(text, label) {
+  const escaped = String(label).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`^${escaped}\\s*:`, 'i');
+
+  for (const rawLine of String(text || '').split(/\r?\n/)) {
+    const line = rawLine
+      .replace(/\*\*/g, '')
+      .replace(/\|\|/g, '')
+      .replace(/[>_]/g, '')
+      .trim();
+    if (!pattern.test(line)) continue;
+
+    const codeValue = rawLine.match(/`([^`]+)`/);
+    if (codeValue) return codeValue[1].trim();
+    return line.replace(pattern, '').trim();
+  }
+
+  return null;
+}
+
+function parseSignedNumber(value) {
+  const text = String(value || '').trim();
+  if (!text) return 0n;
+  const negative = /^\s*-/.test(text);
+  const digits = text.replace(/[^0-9]/g, '');
+  if (!digits) return 0n;
+  const amount = BigInt(digits);
+  return negative ? -amount : amount;
+}
+
+function parsePercent(value) {
+  const match = String(value || '').replace(',', '.').match(/(-?\d+(?:\.\d+)?)\s*%/);
+  return match ? Number(match[1]) : null;
+}
+
+function parsePlazaItem(raw) {
+  const value = String(raw || '').trim();
+  const match = value.match(/^(.*?)\s*\(\s*x\s*([\d\s,._]+)\s*\)\s*$/i);
+  if (!match) return { item: value, quantity: 1 };
+  const quantityDigits = match[2].replace(/[^0-9]/g, '');
+  return {
+    item: match[1].trim(),
+    quantity: Math.max(1, Number(quantityDigits || 1)),
+  };
+}
+
+function parseEachValue(raw) {
+  const match = String(raw || '').match(/\(([-\d\s,._]+)\s*Each\)/i);
+  return match ? parseSignedNumber(match[1]) : 0n;
+}
+
+function parsePlazaPurchaseFromEmbed(embed, message) {
+  const parts = [embed.title, embed.description];
+  for (const field of embed.fields || []) parts.push(field.name, field.value);
+  const fullText = parts.filter(Boolean).join('\n');
+
+  if (!/sniped an item|trading plaza/i.test(fullText)) return null;
+
+  const rawItem = extractExactLabeledValue(fullText, 'Item');
+  const paidRaw = extractExactLabeledValue(fullText, 'Paid');
+  const rapRaw = extractExactLabeledValue(fullText, 'RAP');
+  const profitRaw = extractExactLabeledValue(fullText, 'Profit');
+  const account = extractExactLabeledValue(fullText, 'In Account');
+  if (!rawItem || !paidRaw || !account) return null;
+
+  const parsedItem = parsePlazaItem(rawItem);
+  const paidTotal = parseSignedNumber(paidRaw.split('(')[0]);
+  const embeddedRapTotal = parseSignedNumber(String(rapRaw || '').split('(')[0]);
+  const embeddedProfit = parseSignedNumber(String(profitRaw || '').split('(')[0]);
+  const quantity = Math.max(1, parsedItem.quantity);
+  const paidEachParsed = parseEachValue(paidRaw);
+  const rapEachParsed = parseEachValue(rapRaw);
+
+  return {
+    messageId: message.id,
+    guildId: message.guildId,
+    channelId: message.channelId,
+    createdAt: message.createdTimestamp,
+    item: parsedItem.item,
+    quantity,
+    account,
+    paidTotal,
+    paidEach: paidEachParsed > 0n ? paidEachParsed : paidTotal / BigInt(quantity),
+    embeddedRapTotal,
+    embeddedRapEach: rapEachParsed > 0n
+      ? rapEachParsed
+      : (embeddedRapTotal > 0n ? embeddedRapTotal / BigInt(quantity) : 0n),
+    embeddedProfit,
+    embeddedProfitPercent: parsePercent(profitRaw),
+    thumbnail: embed.thumbnail?.url || null,
+  };
+}
+
+async function fetchPlazaPurchases(channel, fromMillis, toMillis) {
+  const purchases = [];
+  let before;
+  let scanned = 0;
+  let reachedStart = false;
+
+  while (scanned < MAX_MESSAGES && !reachedStart) {
+    const remaining = MAX_MESSAGES - scanned;
+    const batch = await channel.messages.fetch({
+      limit: Math.min(100, remaining),
+      ...(before ? { before } : {}),
+    });
+    if (batch.size === 0) break;
+
+    const messages = [...batch.values()].sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+    scanned += messages.length;
+
+    for (const message of messages) {
+      if (message.createdTimestamp < fromMillis) {
+        reachedStart = true;
+        continue;
+      }
+      if (message.createdTimestamp > toMillis) continue;
+      for (const embed of message.embeds) {
+        const parsed = parsePlazaPurchaseFromEmbed(embed, message);
+        if (parsed) purchases.push(parsed);
+      }
+    }
+
+    before = messages[messages.length - 1].id;
+  }
+
+  return { purchases, scanned, hitLimit: scanned >= MAX_MESSAGES && !reachedStart };
+}
+
+async function fetchPlazaPurchasesFromChannels(channelIds, fromMillis, toMillis) {
+  const results = await Promise.all(channelIds.map(async (channelId) => {
+    const channel = await getTextChannel(channelId);
+    const result = await fetchPlazaPurchases(channel, fromMillis, toMillis);
+    return { channelId, ...result };
+  }));
+
+  return {
+    purchases: results.flatMap((result) => result.purchases),
+    scanned: results.reduce((sum, result) => sum + result.scanned, 0),
+    hitLimit: results.some((result) => result.hitLimit),
+    channelsScanned: results.length,
+  };
+}
+
+async function repricePlazaPurchases(purchases) {
+  const priceResult = await fetchPs99RapPrices(purchases.map((purchase) => purchase.item));
+  let pricingFromPs99Rap = 0;
+  let pricingFallback = 0;
+
+  const repriced = purchases.map((purchase) => {
+    const itemKey = normalizeItemName(purchase.item);
+    const current = priceResult.prices.get(itemKey);
+    const currentUnitRap = current?.rap > 0n ? current.rap : purchase.embeddedRapEach;
+    const rapSource = current?.rap > 0n ? 'ps99rap' : 'webhook';
+    if (rapSource === 'ps99rap') pricingFromPs99Rap += 1;
+    else pricingFallback += 1;
+
+    const currentRapTotal = currentUnitRap * BigInt(purchase.quantity);
+    const currentProfit = currentRapTotal - purchase.paidTotal;
+    const currentProfitPercent = purchase.paidTotal > 0n
+      ? (Number(currentProfit) / Number(purchase.paidTotal)) * 100
+      : 0;
+    const discountPerUnit = currentUnitRap - purchase.paidEach;
+
+    return {
+      ...purchase,
+      currentUnitRap,
+      currentRapTotal,
+      currentProfit,
+      currentProfitPercent,
+      discountPerUnit,
+      rapSource,
+      rapSourceUrl: current?.sourceUrl || null,
+    };
+  });
+
+  return {
+    purchases: repriced,
+    pricingWanted: new Set(purchases.map((purchase) => normalizeItemName(purchase.item))).size,
+    pricingFound: priceResult.prices.size,
+    pricingFromPs99Rap,
+    pricingFallback,
+    ps99RapErrors: priceResult.errors.length,
+  };
+}
+
+function filterPlazaPurchases(purchases, itemQuery, account) {
+  const normalizedItem = normalizeItemName(itemQuery);
+  return purchases.filter((purchase) => (
+    (!normalizedItem || normalizeItemName(purchase.item).includes(normalizedItem))
+    && accountMatches(purchase.account, account)
+  ));
+}
+
+function parseRequiredDateRange(raw) {
+  const dates = splitDateRange(raw);
+  if (!dates) return null;
+  const from = parseOptionalDate(dates.from, false);
+  const to = parseOptionalDate(dates.to, true);
+  if (!from || !to || to < from) return null;
+  return { from, to };
+}
+
+function getPlazaMessageUrl(purchase) {
+  if (!purchase.guildId || !purchase.channelId || !purchase.messageId) return null;
+  return `https://discord.com/channels/${purchase.guildId}/${purchase.channelId}/${purchase.messageId}`;
+}
+
+function formatProfitPercent(value) {
+  const number = Number(value || 0);
+  const sign = number > 0 ? '+' : '';
+  return `${sign}${number.toFixed(2)}%`;
+}
+
+function sortPlazaPurchases(purchases, sortMode) {
+  return [...purchases].sort((a, b) => {
+    if (sortMode === 'percent') return b.currentProfitPercent - a.currentProfitPercent;
+    if (sortMode === 'quantity') return b.quantity - a.quantity || (b.createdAt - a.createdAt);
+    if (sortMode === 'discount') {
+      if (a.discountPerUnit !== b.discountPerUnit) return a.discountPerUnit > b.discountPerUnit ? -1 : 1;
+      return b.createdAt - a.createdAt;
+    }
+    if (a.currentProfit !== b.currentProfit) return a.currentProfit > b.currentProfit ? -1 : 1;
+    return b.createdAt - a.createdAt;
+  });
+}
+
+function plazaSortLabel(sortMode) {
+  return {
+    profit: 'aktualny profit',
+    percent: 'profit procentowy',
+    quantity: 'liczba sztuk',
+    discount: 'różnica ceny do RAP za sztukę',
+  }[sortMode] || sortMode;
+}
+
 // ============================================================
 // PAGINACJA
 // ============================================================
@@ -1709,13 +2139,146 @@ function buildPetValuePageEmbed(session, page) {
   return embed;
 }
 
+
+function buildBestBuysPageEmbed(session, page) {
+  const start = page * HISTORY_PAGE_SIZE;
+  const pagePurchases = session.sortedPurchases.slice(start, start + HISTORY_PAGE_SIZE);
+  const lines = pagePurchases.map((purchase, index) => {
+    const itemText = purchase.rapSourceUrl
+      ? `[${purchase.item}](${purchase.rapSourceUrl})`
+      : purchase.item;
+    const messageUrl = getPlazaMessageUrl(purchase);
+    const dateText = messageUrl
+      ? `[${formatDateTime(purchase.createdAt)}](${messageUrl})`
+      : formatDateTime(purchase.createdAt);
+    return `${start + index + 1}. **${itemText} ×${purchase.quantity}**\n`
+      + `   Zapłacono: \`${formatBigInt(purchase.paidTotal)}\` (${formatBigInt(purchase.paidEach)}/szt.)\n`
+      + `   Aktualny RAP: \`${formatBigInt(purchase.currentRapTotal)}\` (${formatBigInt(purchase.currentUnitRap)}/szt.)\n`
+      + `   Profit: \`${formatSignedBigInt(purchase.currentProfit)}\` (${formatProfitPercent(purchase.currentProfitPercent)}) • \`${purchase.account}\` • ${dateText}`;
+  }).join('\n') || 'Brak zakupów na tej stronie.';
+
+  return new EmbedBuilder()
+    .setTitle('🏆 Najlepsze zakupy — Trading Plaza')
+    .setColor(session.totalProfit >= 0n ? 0x57f287 : 0xed4245)
+    .setDescription(
+      `**Kanał:** ${session.channelLabel}\n`
+      + `**Okres:** ${session.from.toFormat('dd.MM.yyyy')} – ${session.to.toFormat('dd.MM.yyyy')}\n`
+      + `**Konto:** \`${session.account}\`\n`
+      + `**Przedmiot:** ${session.itemQuery || 'wszystkie'}\n`
+      + `**Sortowanie:** ${plazaSortLabel(session.sortMode)}\n`
+      + '**Wycena:** aktualny RAP z PS99RAP; brak ceny = RAP z webhooka',
+    )
+    .addFields(
+      { name: '🧾 Zakupy', value: `\`${session.purchases.length}\``, inline: true },
+      { name: '📦 Sztuki', value: `\`${formatBigInt(session.totalQuantity)}\``, inline: true },
+      { name: '💸 Wydano', value: `\`${formatBigInt(session.totalPaid)}\``, inline: true },
+      { name: '💎 Aktualny RAP', value: `\`${formatBigInt(session.totalRap)}\``, inline: true },
+      { name: '📈 Szacowany profit', value: `\`${formatSignedBigInt(session.totalProfit)}\``, inline: true },
+      { name: '🌐 Ceny PS99RAP', value: `\`${session.pricingFound}/${session.pricingWanted}\``, inline: true },
+      { name: '📋 Wyniki', value: truncate(lines) },
+    )
+    .setFooter({
+      text: session.hitLimit
+        ? `Strona ${page + 1}/${session.pageCount} • osiągnięto limit ${MAX_MESSAGES} wiadomości • RAP: ps99rap.com`
+        : `Strona ${page + 1}/${session.pageCount} • RAP: ps99rap.com`,
+    })
+    .setTimestamp();
+}
+
+function buildPlazaItemPageEmbed(session, page) {
+  const start = page * HISTORY_PAGE_SIZE;
+  const pagePurchases = session.sortedPurchases.slice(start, start + HISTORY_PAGE_SIZE);
+  const lines = pagePurchases.map((purchase, index) => {
+    const messageUrl = getPlazaMessageUrl(purchase);
+    const dateText = messageUrl
+      ? `[${formatDateTime(purchase.createdAt)}](${messageUrl})`
+      : formatDateTime(purchase.createdAt);
+    return `${start + index + 1}. **×${purchase.quantity}** • ${dateText} • \`${purchase.account}\`\n`
+      + `   Zapłacono: \`${formatBigInt(purchase.paidTotal)}\` (${formatBigInt(purchase.paidEach)}/szt.)\n`
+      + `   Teraz warte: \`${formatBigInt(purchase.currentRapTotal)}\` • profit: \`${formatSignedBigInt(purchase.currentProfit)}\``;
+  }).join('\n') || 'Brak historii na tej stronie.';
+
+  const currentPriceLines = session.itemPrices.map((item) => {
+    const name = item.sourceUrl ? `[${item.item}](${item.sourceUrl})` : item.item;
+    return `• **${name}** — \`${formatBigInt(item.currentUnitRap)}\` RAP/szt.`;
+  }).join('\n') || 'Brak aktualnej ceny.';
+
+  const biggest = session.biggestPurchase;
+  const cheapest = session.cheapestPurchase;
+
+  return new EmbedBuilder()
+    .setTitle(`📦 Plaza Item: ${session.itemQuery}`)
+    .setColor(0xfee75c)
+    .setDescription(
+      `**Kanał:** ${session.channelLabel}\n`
+      + `**Okres:** ${session.from.toFormat('dd.MM.yyyy')} – ${session.to.toFormat('dd.MM.yyyy')}\n`
+      + `**Konto:** \`${session.account}\`\n`
+      + '**Aktualna wycena:** PS99RAP; fallback z webhooka',
+    )
+    .addFields(
+      { name: '🧾 Zakupy', value: `\`${session.purchases.length}\``, inline: true },
+      { name: '📦 Kupiono sztuk', value: `\`${formatBigInt(session.totalQuantity)}\``, inline: true },
+      { name: '💸 Wydano', value: `\`${formatBigInt(session.totalPaid)}\``, inline: true },
+      { name: '💎 Aktualna wartość', value: `\`${formatBigInt(session.totalRap)}\``, inline: true },
+      { name: '📈 Szacowany profit', value: `\`${formatSignedBigInt(session.totalProfit)}\``, inline: true },
+      { name: '🏷️ Średnia cena/szt.', value: `\`${formatBigInt(session.averagePaidEach)}\``, inline: true },
+      {
+        name: '🏆 Największy zakup',
+        value: biggest
+          ? `**${biggest.item} ×${biggest.quantity}** • ${formatDateTime(biggest.createdAt)}\nZapłacono: \`${formatBigInt(biggest.paidTotal)}\` (${formatBigInt(biggest.paidEach)}/szt.)`
+          : 'Brak',
+      },
+      {
+        name: '💰 Najniższa cena za sztukę',
+        value: cheapest
+          ? `\`${formatBigInt(cheapest.paidEach)}\` • **${cheapest.item}** • ${formatDateTime(cheapest.createdAt)}`
+          : 'Brak',
+      },
+      { name: '🌐 Aktualny RAP przedmiotów', value: truncate(currentPriceLines) },
+      { name: '📜 Historia — najnowsze u góry', value: truncate(lines) },
+    )
+    .setFooter({ text: `Strona ${page + 1}/${session.pageCount} • RAP: ps99rap.com` })
+    .setTimestamp();
+}
+
+function buildPlazaTimePageEmbed(session, page) {
+  const start = page * 12;
+  const pageHours = session.hours.slice(start, start + 12);
+  const lines = pageHours.map((hour) => (
+    `**${String(hour.hour).padStart(2, '0')}:00–${String(hour.hour).padStart(2, '0')}:59** — `
+    + `${hour.transactions} zakupów • ${formatBigInt(hour.quantity)} szt.\n`
+    + `Wydano: \`${formatBigInt(hour.paid)}\` • RAP: \`${formatBigInt(hour.rap)}\` • profit: \`${formatSignedBigInt(hour.profit)}\``
+  )).join('\n') || 'Brak danych.';
+
+  return new EmbedBuilder()
+    .setTitle('🕒 Godziny zakupów — Trading Plaza')
+    .setColor(0x5865f2)
+    .setDescription(
+      `**Kanał:** ${session.channelLabel}\n`
+      + `**Okres:** ${session.from.toFormat('dd.MM.yyyy')} – ${session.to.toFormat('dd.MM.yyyy')}\n`
+      + `**Konto:** \`${session.account}\`\n`
+      + '**Wycena:** aktualny RAP z PS99RAP',
+    )
+    .addFields(
+      { name: '🧾 Najwięcej zakupów', value: session.bestTransactionsText, inline: true },
+      { name: '📦 Najwięcej sztuk', value: session.bestQuantityText, inline: true },
+      { name: '💎 Największy profit', value: session.bestProfitText, inline: true },
+      { name: '📊 Godziny', value: truncate(lines) },
+    )
+    .setFooter({ text: `Strona ${page + 1}/${session.pageCount} • strefa ${TIME_ZONE} • RAP: ps99rap.com` })
+    .setTimestamp();
+}
+
 function renderPaginationSession(session, page) {
   const safePage = Math.max(0, Math.min(page, session.pageCount - 1));
   let embed;
 
   if (session.kind === 'drop') embed = buildDropPageEmbed(session, safePage);
   else if (session.kind === 'pet') embed = buildPetPageEmbed(session, safePage);
-  else embed = buildPetValuePageEmbed(session, safePage);
+  else if (session.kind === 'petvalue') embed = buildPetValuePageEmbed(session, safePage);
+  else if (session.kind === 'bestbuys') embed = buildBestBuysPageEmbed(session, safePage);
+  else if (session.kind === 'plazaitem') embed = buildPlazaItemPageEmbed(session, safePage);
+  else embed = buildPlazaTimePageEmbed(session, safePage);
 
   return {
     page: safePage,
@@ -2126,6 +2689,8 @@ async function dailyReportTick() {
       console.error(`Błąd raportu dziennego ${channelConfig.label}:`, error);
     }
   }
+
+  await dailyPlazaReportTick(now);
 }
 
 function startScheduler() {
@@ -2135,6 +2700,165 @@ function startScheduler() {
     dailyReportTick().catch((error) => console.error('Błąd schedulera raportów:', error));
   }, 30_000);
   dailyReportTick().catch(() => {});
+}
+
+
+// ============================================================
+// RAPORT DZIENNY TRADING PLAZA 23:59
+// ============================================================
+
+function groupPlazaPurchases(purchases) {
+  const byItem = new Map();
+  const byAccount = new Map();
+
+  for (const purchase of purchases) {
+    const itemKey = normalizeItemName(purchase.item);
+    const item = byItem.get(itemKey) || {
+      item: purchase.item,
+      quantity: 0n,
+      transactions: 0,
+      paid: 0n,
+      rap: 0n,
+      profit: 0n,
+      unitRap: purchase.currentUnitRap,
+      sourceUrl: purchase.rapSourceUrl,
+    };
+    item.quantity += BigInt(purchase.quantity);
+    item.transactions += 1;
+    item.paid += purchase.paidTotal;
+    item.rap += purchase.currentRapTotal;
+    item.profit += purchase.currentProfit;
+    item.unitRap = purchase.currentUnitRap;
+    if (purchase.rapSourceUrl) item.sourceUrl = purchase.rapSourceUrl;
+    byItem.set(itemKey, item);
+
+    const accountKey = normalizeAccount(purchase.account);
+    const account = byAccount.get(accountKey) || {
+      account: purchase.account,
+      transactions: 0,
+      quantity: 0n,
+      paid: 0n,
+      rap: 0n,
+      profit: 0n,
+    };
+    account.transactions += 1;
+    account.quantity += BigInt(purchase.quantity);
+    account.paid += purchase.paidTotal;
+    account.rap += purchase.currentRapTotal;
+    account.profit += purchase.currentProfit;
+    byAccount.set(accountKey, account);
+  }
+
+  return {
+    items: [...byItem.values()].sort((a, b) => {
+      if (a.quantity !== b.quantity) return a.quantity > b.quantity ? -1 : 1;
+      return b.transactions - a.transactions;
+    }),
+    accounts: [...byAccount.values()].sort((a, b) => {
+      if (a.profit !== b.profit) return a.profit > b.profit ? -1 : 1;
+      return b.transactions - a.transactions;
+    }),
+  };
+}
+
+function buildDailyPlazaReportEmbeds(channelConfig, reportDate, purchases, metadata) {
+  const totalQuantity = purchases.reduce((sum, purchase) => sum + BigInt(purchase.quantity), 0n);
+  const totalPaid = purchases.reduce((sum, purchase) => sum + purchase.paidTotal, 0n);
+  const totalRap = purchases.reduce((sum, purchase) => sum + purchase.currentRapTotal, 0n);
+  const totalProfit = totalRap - totalPaid;
+  const bestPurchase = [...purchases].sort((a, b) => (
+    a.currentProfit === b.currentProfit ? b.createdAt - a.createdAt : (a.currentProfit > b.currentProfit ? -1 : 1)
+  ))[0] || null;
+  const grouped = groupPlazaPurchases(purchases);
+  const mostBought = grouped.items[0] || null;
+
+  const summary = new EmbedBuilder()
+    .setTitle(`⛱️ Trading Plaza — raport dnia — ${channelConfig.label}`)
+    .setColor(totalProfit >= 0n ? channelConfig.color : 0xed4245)
+    .setDescription(
+      `**Data:** ${reportDate.toFormat('dd.MM.yyyy')}\n`
+      + '**Wycena:** aktualny RAP z PS99RAP; brak ceny = RAP z webhooka\n'
+      + `**Strefa czasowa:** ${TIME_ZONE}`,
+    )
+    .addFields(
+      { name: '🧾 Zakupy', value: `\`${purchases.length}\``, inline: true },
+      { name: '📦 Kupione przedmioty', value: `\`${formatBigInt(totalQuantity)}\``, inline: true },
+      { name: '💸 Wydano', value: `\`${formatBigInt(totalPaid)}\``, inline: true },
+      { name: '💎 Łączny aktualny RAP', value: `\`${formatBigInt(totalRap)}\``, inline: true },
+      { name: '📈 Szacowany profit', value: `\`${formatSignedBigInt(totalProfit)}\``, inline: true },
+      { name: '🌐 Ceny PS99RAP', value: `\`${metadata.pricingFound}/${metadata.pricingWanted}\``, inline: true },
+      {
+        name: '🏆 Najlepszy zakup',
+        value: bestPurchase
+          ? `**${bestPurchase.item} ×${bestPurchase.quantity}**\nZapłacono: \`${formatBigInt(bestPurchase.paidTotal)}\` • RAP: \`${formatBigInt(bestPurchase.currentRapTotal)}\`\nProfit: \`${formatSignedBigInt(bestPurchase.currentProfit)}\` (${formatProfitPercent(bestPurchase.currentProfitPercent)})`
+          : 'Brak zakupów',
+      },
+      {
+        name: '📦 Najczęściej kupowany',
+        value: mostBought
+          ? `**${mostBought.item}** — ${formatBigInt(mostBought.quantity)} szt. w ${mostBought.transactions} zakupach`
+          : 'Brak zakupów',
+      },
+    )
+    .setFooter({
+      text: metadata.hitLimit
+        ? `Osiągnięto limit ${MAX_MESSAGES} wiadomości • RAP: ps99rap.com`
+        : 'Automatyczny raport Plaza 23:59 • RAP: ps99rap.com',
+    })
+    .setTimestamp();
+  if (bestPurchase?.thumbnail) summary.setThumbnail(bestPurchase.thumbnail);
+
+  const itemLines = grouped.items.map((item, index) => {
+    const name = item.sourceUrl ? `[${item.item}](${item.sourceUrl})` : item.item;
+    return `${index + 1}. **${name}** — ${formatBigInt(item.quantity)} szt. • wydano \`${formatBigInt(item.paid)}\` • RAP \`${formatBigInt(item.rap)}\` • profit \`${formatSignedBigInt(item.profit)}\``;
+  });
+  const accountLines = grouped.accounts.map((account, index) => (
+    `${index + 1}. \`${account.account}\` — ${account.transactions} zakupów • ${formatBigInt(account.quantity)} szt. • wydano \`${formatBigInt(account.paid)}\` • profit \`${formatSignedBigInt(account.profit)}\``
+  ));
+
+  const embeds = [summary];
+  splitTextIntoChunks(itemLines).forEach((chunk, index, chunks) => {
+    embeds.push(new EmbedBuilder()
+      .setTitle(`📦 Przedmioty${chunks.length > 1 ? ` (${index + 1}/${chunks.length})` : ''}`)
+      .setColor(channelConfig.color)
+      .setDescription(chunk));
+  });
+  splitTextIntoChunks(accountLines).forEach((chunk, index, chunks) => {
+    embeds.push(new EmbedBuilder()
+      .setTitle(`👥 Konta${chunks.length > 1 ? ` (${index + 1}/${chunks.length})` : ''}`)
+      .setColor(channelConfig.color)
+      .setDescription(chunk));
+  });
+  return embeds;
+}
+
+async function sendDailyPlazaReport(channelConfig, reportDate) {
+  const from = reportDate.startOf('day');
+  const to = reportDate.endOf('day');
+  const result = await fetchPlazaPurchasesFromChannels([channelConfig.id], from.toMillis(), to.toMillis());
+  const repriced = await repricePlazaPurchases(result.purchases);
+  const targetChannel = await getTextChannel(channelConfig.reportChannelId);
+  const embeds = buildDailyPlazaReportEmbeds(channelConfig, reportDate, repriced.purchases, {
+    scanned: result.scanned,
+    hitLimit: result.hitLimit,
+    pricingFound: repriced.pricingFound,
+    pricingWanted: repriced.pricingWanted,
+  });
+  await sendEmbedsInBatches(targetChannel, embeds);
+  state.dailyPlazaReports[channelConfig.key] = reportDate.toISODate();
+  saveState();
+  console.log(`Wysłano raport Plaza: ${channelConfig.label} — ${reportDate.toISODate()}`);
+}
+
+async function dailyPlazaReportTick(now) {
+  for (const channelConfig of PLAZA_CHANNELS) {
+    if (state.dailyPlazaReports[channelConfig.key] === now.toISODate()) continue;
+    try {
+      await sendDailyPlazaReport(channelConfig, now);
+    } catch (error) {
+      console.error(`Błąd raportu Plaza ${channelConfig.label}:`, error);
+    }
+  }
 }
 
 // ============================================================
@@ -2366,10 +3090,10 @@ async function registerCommands() {
 
   if (GUILD_ID) {
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body });
-    console.log(`Zarejestrowano /drop, /today, /webhookurl, /pet i /petvalue na serwerze ${GUILD_ID}.`);
+    console.log(`Zarejestrowano /drop, /today, /webhookurl, /pet, /petvalue, /bestbuys, /plazaitem i /plazatime na serwerze ${GUILD_ID}.`);
   } else {
     await rest.put(Routes.applicationCommands(CLIENT_ID), { body });
-    console.log('Zarejestrowano globalne komendy /drop, /today, /webhookurl, /pet i /petvalue.');
+    console.log('Zarejestrowano globalne komendy /drop, /today, /webhookurl, /pet, /petvalue, /bestbuys, /plazaitem i /plazatime.');
   }
 }
 
@@ -2555,6 +3279,193 @@ async function executeDropForm(interaction, params) {
 
   paginationSessions.set(paginationId, pagination);
   const rendered = renderPaginationSession(pagination, 0);
+  await interaction.editReply({ embeds: rendered.embeds, components: rendered.components });
+}
+
+
+async function executeBestBuysCommand(interaction, params) {
+  await prepareResultInteraction(interaction);
+  const range = parseRequiredDateRange(params.datesRaw);
+  if (!range) {
+    await interaction.editReply('❌ Nieprawidłowy zakres dat. Użyj: `12.07.2026 - 12.07.2026`.');
+    return;
+  }
+  const selection = getPlazaChannelSelection(params.channelKey);
+  if (!selection) {
+    await interaction.editReply('❌ Nie znaleziono kanału Plaza.');
+    return;
+  }
+
+  const account = String(params.account || '').trim() || 'wszystkie';
+  const itemQuery = String(params.itemQuery || '').trim();
+  const result = await fetchPlazaPurchasesFromChannels(selection.ids, range.from.toMillis(), range.to.toMillis());
+  const filtered = filterPlazaPurchases(result.purchases, itemQuery, account);
+  const repriced = await repricePlazaPurchases(filtered);
+  const sortedPurchases = sortPlazaPurchases(repriced.purchases, params.sortMode);
+  const totalQuantity = repriced.purchases.reduce((sum, purchase) => sum + BigInt(purchase.quantity), 0n);
+  const totalPaid = repriced.purchases.reduce((sum, purchase) => sum + purchase.paidTotal, 0n);
+  const totalRap = repriced.purchases.reduce((sum, purchase) => sum + purchase.currentRapTotal, 0n);
+  const pageCount = Math.max(1, Math.ceil(sortedPurchases.length / HISTORY_PAGE_SIZE));
+  const sessionId = createSessionId();
+  const session = {
+    id: sessionId,
+    kind: 'bestbuys',
+    ownerId: interaction.user.id,
+    createdAt: Date.now(),
+    pageCount,
+    sortedPurchases,
+    purchases: repriced.purchases,
+    channelLabel: selection.label,
+    from: range.from,
+    to: range.to,
+    account,
+    itemQuery,
+    sortMode: params.sortMode,
+    totalQuantity,
+    totalPaid,
+    totalRap,
+    totalProfit: totalRap - totalPaid,
+    pricingFound: repriced.pricingFound,
+    pricingWanted: repriced.pricingWanted,
+    scanned: result.scanned,
+    hitLimit: result.hitLimit,
+  };
+  paginationSessions.set(sessionId, session);
+  const rendered = renderPaginationSession(session, 0);
+  await interaction.editReply({ embeds: rendered.embeds, components: rendered.components });
+}
+
+async function executePlazaItemCommand(interaction, params) {
+  await prepareResultInteraction(interaction);
+  const range = parseRequiredDateRange(params.datesRaw);
+  if (!range) {
+    await interaction.editReply('❌ Nieprawidłowy zakres dat. Użyj: `12.07.2026 - 12.07.2026`.');
+    return;
+  }
+  const selection = getPlazaChannelSelection(params.channelKey);
+  if (!selection) {
+    await interaction.editReply('❌ Nie znaleziono kanału Plaza.');
+    return;
+  }
+  const account = String(params.account || '').trim() || 'wszystkie';
+  const itemQuery = String(params.itemQuery || '').trim();
+  const result = await fetchPlazaPurchasesFromChannels(selection.ids, range.from.toMillis(), range.to.toMillis());
+  const filtered = filterPlazaPurchases(result.purchases, itemQuery, account);
+  if (filtered.length === 0) {
+    await interaction.editReply(`❌ Nie znaleziono zakupów pasujących do **${itemQuery}** w wybranym okresie.`);
+    return;
+  }
+  const repriced = await repricePlazaPurchases(filtered);
+  const sortedPurchases = [...repriced.purchases].sort((a, b) => b.createdAt - a.createdAt);
+  const totalQuantity = repriced.purchases.reduce((sum, purchase) => sum + BigInt(purchase.quantity), 0n);
+  const totalPaid = repriced.purchases.reduce((sum, purchase) => sum + purchase.paidTotal, 0n);
+  const totalRap = repriced.purchases.reduce((sum, purchase) => sum + purchase.currentRapTotal, 0n);
+  const biggestPurchase = [...repriced.purchases].sort((a, b) => b.quantity - a.quantity || b.createdAt - a.createdAt)[0];
+  const cheapestPurchase = [...repriced.purchases].sort((a, b) => (
+    a.paidEach === b.paidEach ? b.createdAt - a.createdAt : (a.paidEach < b.paidEach ? -1 : 1)
+  ))[0];
+  const itemPriceMap = new Map();
+  for (const purchase of repriced.purchases) {
+    const key = normalizeItemName(purchase.item);
+    if (!itemPriceMap.has(key)) {
+      itemPriceMap.set(key, {
+        item: purchase.item,
+        currentUnitRap: purchase.currentUnitRap,
+        sourceUrl: purchase.rapSourceUrl,
+      });
+    }
+  }
+  const pageCount = Math.max(1, Math.ceil(sortedPurchases.length / HISTORY_PAGE_SIZE));
+  const sessionId = createSessionId();
+  const session = {
+    id: sessionId,
+    kind: 'plazaitem',
+    ownerId: interaction.user.id,
+    createdAt: Date.now(),
+    pageCount,
+    sortedPurchases,
+    purchases: repriced.purchases,
+    channelLabel: selection.label,
+    from: range.from,
+    to: range.to,
+    account,
+    itemQuery,
+    totalQuantity,
+    totalPaid,
+    totalRap,
+    totalProfit: totalRap - totalPaid,
+    averagePaidEach: totalQuantity > 0n ? totalPaid / totalQuantity : 0n,
+    biggestPurchase,
+    cheapestPurchase,
+    itemPrices: [...itemPriceMap.values()],
+  };
+  paginationSessions.set(sessionId, session);
+  const rendered = renderPaginationSession(session, 0);
+  await interaction.editReply({ embeds: rendered.embeds, components: rendered.components });
+}
+
+async function executePlazaTimeCommand(interaction, params) {
+  await prepareResultInteraction(interaction);
+  const range = parseRequiredDateRange(params.datesRaw);
+  if (!range) {
+    await interaction.editReply('❌ Nieprawidłowy zakres dat. Użyj: `12.07.2026 - 12.07.2026`.');
+    return;
+  }
+  const selection = getPlazaChannelSelection(params.channelKey);
+  if (!selection) {
+    await interaction.editReply('❌ Nie znaleziono kanału Plaza.');
+    return;
+  }
+  const account = String(params.account || '').trim() || 'wszystkie';
+  const result = await fetchPlazaPurchasesFromChannels(selection.ids, range.from.toMillis(), range.to.toMillis());
+  const filtered = filterPlazaPurchases(result.purchases, '', account);
+  const repriced = await repricePlazaPurchases(filtered);
+  const hours = Array.from({ length: 24 }, (_, hour) => ({
+    hour,
+    transactions: 0,
+    quantity: 0n,
+    paid: 0n,
+    rap: 0n,
+    profit: 0n,
+  }));
+  for (const purchase of repriced.purchases) {
+    const hour = DateTime.fromMillis(purchase.createdAt, { zone: TIME_ZONE }).hour;
+    const bucket = hours[hour];
+    bucket.transactions += 1;
+    bucket.quantity += BigInt(purchase.quantity);
+    bucket.paid += purchase.paidTotal;
+    bucket.rap += purchase.currentRapTotal;
+    bucket.profit += purchase.currentProfit;
+  }
+  const activeHours = hours.filter((hour) => hour.transactions > 0);
+  const bestTransactions = [...activeHours].sort((a, b) => b.transactions - a.transactions || a.hour - b.hour)[0];
+  const bestQuantity = [...activeHours].sort((a, b) => (
+    a.quantity === b.quantity ? a.hour - b.hour : (a.quantity > b.quantity ? -1 : 1)
+  ))[0];
+  const bestProfit = [...activeHours].sort((a, b) => (
+    a.profit === b.profit ? a.hour - b.hour : (a.profit > b.profit ? -1 : 1)
+  ))[0];
+  const hourText = (hour, metric) => hour
+    ? `\`${String(hour.hour).padStart(2, '0')}:00\` — ${metric}`
+    : 'Brak danych';
+  const sessionId = createSessionId();
+  const session = {
+    id: sessionId,
+    kind: 'plazatime',
+    ownerId: interaction.user.id,
+    createdAt: Date.now(),
+    pageCount: 2,
+    hours,
+    channelLabel: selection.label,
+    from: range.from,
+    to: range.to,
+    account,
+    bestTransactionsText: hourText(bestTransactions, `${bestTransactions?.transactions || 0} zakupów`),
+    bestQuantityText: hourText(bestQuantity, `${formatBigInt(bestQuantity?.quantity || 0n)} szt.`),
+    bestProfitText: hourText(bestProfit, formatSignedBigInt(bestProfit?.profit || 0n)),
+  };
+  paginationSessions.set(sessionId, session);
+  const rendered = renderPaginationSession(session, 0);
   await interaction.editReply({ embeds: rendered.embeds, components: rendered.components });
 }
 
@@ -3229,7 +4140,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   startPs99RapCatalogRefresh();
   await warmCatalogAndRecords();
   alertsReady = true;
-  console.log('DropVault jest gotowy: formularze modalne, /today, panele serwerów, relay webhooków, PS99RAP, alerty, rekordy i raport 23:59 aktywne.');
+  console.log('DropVault jest gotowy: formularze modalne, dropy, Trading Plaza, PS99RAP, raporty 23:59, panele serwerów, relay webhooków, alerty i rekordy aktywne.');
 });
 
 client.on(Events.MessageCreate, async (message) => {
@@ -3286,10 +4197,57 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'bestbuys') {
+      await interaction.showModal(buildBestBuysFormModal(interaction.user.id));
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'plazaitem') {
+      await interaction.showModal(buildPlazaItemFormModal(interaction.user.id));
+      return;
+    }
+
+    if (interaction.isChatInputCommand() && interaction.commandName === 'plazatime') {
+      await interaction.showModal(buildPlazaTimeFormModal(interaction.user.id));
+      return;
+    }
+
     if (interaction.isModalSubmit() && interaction.customId.startsWith('form:')) {
       const [, formName, ownerId] = interaction.customId.split(':');
       if (interaction.user.id !== ownerId) {
         await interaction.reply({ content: 'Ten formularz należy do innej osoby.', flags: MessageFlags.Ephemeral });
+        return;
+      }
+
+
+      if (formName === 'bestbuys') {
+        await executeBestBuysCommand(interaction, {
+          channelKey: getModalSelect(interaction, 'form_channel', 'pawel'),
+          sortMode: getModalSelect(interaction, 'form_sort', 'profit'),
+          datesRaw: interaction.fields.getTextInputValue('form_dates'),
+          itemQuery: interaction.fields.getTextInputValue('form_item'),
+          account: interaction.fields.getTextInputValue('form_account'),
+        });
+        return;
+      }
+
+      if (formName === 'plazaitem') {
+        await executePlazaItemCommand(interaction, {
+          itemQuery: interaction.fields.getTextInputValue('form_item'),
+          channelKey: getModalSelect(interaction, 'form_channel', 'pawel'),
+          datesRaw: interaction.fields.getTextInputValue('form_dates'),
+          account: interaction.fields.getTextInputValue('form_account'),
+        });
+        return;
+      }
+
+      if (formName === 'plazatime') {
+        await executePlazaTimeCommand(interaction, {
+          channelKey: getModalSelect(interaction, 'form_channel', 'pawel'),
+          datesRaw: interaction.fields.getTextInputValue('form_dates'),
+          account: interaction.fields.getTextInputValue('form_account'),
+        });
         return;
       }
 

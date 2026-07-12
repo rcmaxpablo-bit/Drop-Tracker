@@ -1,63 +1,79 @@
-# DropVault Bot 2.7 — wybór kont Roblox z listy
+# DropVault Bot 3.0 — Dropy + Trading Plaza
 
-Bot analizuje dropy Huge, Titanic i Gargantuan z dwóch oddzielnych kanałów oraz pobiera aktualny RAP z PS99RAP.
+Bot analizuje dropy Huge/Titanic/Gargantuan oraz zakupy z Booths Sniper na dwóch oddzielnych kanałach. Aktualne ceny pobiera z publicznego API PS99RAP.
 
-## Najważniejsza zmiana
+## Nowe komendy Trading Plaza
 
-Przy komendach `/drop`, `/today` i `/pet` nie trzeba już ręcznie wpisywać nicku konta Roblox. Najpierw ustawiasz filtry w formularzu, a po zatwierdzeniu bot automatycznie pokazuje listę nicków wykrytych na wybranym kanale.
+### `/bestbuys`
 
-- lista kont jest pobierana oddzielnie z kanału Pawła, Ryzena albo z obu kanałów,
-- zawsze dostępna jest opcja **Wszystkie konta**,
-- przy ponad 24 kontach pojawiają się przyciski **Poprzednie konta** i **Następne konta**,
-- wybrany nick jest używany jako filtr bez ręcznego wpisywania.
+Otwiera formularz z wyborem:
 
-### `/drop`
+- kanału: 🟢 Plaza Paweł / 🔵 Plaza Ryzen / obie,
+- zakresu dat,
+- opcjonalnego przedmiotu i konta,
+- sortowania według aktualnego profitu, procentu profitu, liczby sztuk lub różnicy ceny do RAP.
 
-Formularz zawiera:
+Każdy zakup pokazuje cenę zapłaconą, cenę za sztukę, aktualny RAP z PS99RAP, aktualną wartość całego zakupu i szacowany profit.
 
-- kanał: 🟢 Dropy Paweł / 🔵 Dropy Ryzen / oba,
-- rodzaj: Huge / Titanic / Gargantuan / wszystkie,
-- wariant: Normal / Golden / Rainbow / Shiny / Shiny Golden / Shiny Rainbow,
-- po zatwierdzeniu formularza: lista wykrytych kont Roblox,
-- zakres dat i godzin w formacie `DD.MM.RRRR GG:MM - DD.MM.RRRR GG:MM`.
+### `/plazaitem`
 
-### `/today`
+Pokazuje statystyki konkretnego przedmiotu:
 
-Formularz zawiera kanał, rodzaj i wariant. Po zatwierdzeniu wybierasz konto z automatycznej listy. Bot liczy od dzisiejszej godziny `00:00` do chwili użycia komendy.
+- ile razy został kupiony,
+- ile sztuk kupiono,
+- ile łącznie wydano,
+- aktualną łączną wartość według PS99RAP,
+- aktualny szacowany profit,
+- największy zakup i jego datę,
+- najniższą cenę za sztukę,
+- historię zakupów z przyciskami stron.
 
-### `/pet`
+### `/plazatime`
 
-Formularz zawiera nazwę peta, kanał, wariant oraz opcjonalny zakres dat `DD.MM.RRRR - DD.MM.RRRR`. Po zatwierdzeniu wybierasz konto z automatycznej listy.
+Grupuje zakupy według godziny w strefie `Europe/Warsaw` i pokazuje:
 
-### `/petvalue`
+- godzinę z największą liczbą zakupów,
+- godzinę z największą liczbą kupionych sztuk,
+- godzinę z największym aktualnym profitem,
+- rozpisanie wszystkich 24 godzin.
 
-Formularz zawiera nazwę peta, rodzaj, wariant, okres historii oraz opcjonalny własny zakres dat. Historia pochodzi wyłącznie z PS99RAP.
+## Automatyczny raport Trading Plaza o 23:59
 
-### `/webhookurl`
+Bot wysyła osobny raport na kanał Pawła i Ryzena:
 
-Administrator wybiera w oknie Pawła albo Ryzena i dostaje osobny adres relay do wklejenia w skrypcie Roblox.
+- liczbę zakupów,
+- liczbę kupionych przedmiotów,
+- sumę wydanych diamondów,
+- łączny aktualny RAP z PS99RAP,
+- szacowany profit,
+- najlepszy zakup,
+- najczęściej kupowany przedmiot,
+- podział według przedmiotów i kont.
 
-## Kanały i pingi
+Domyślne kanały:
 
-- 🟢 Dropy Paweł: `1515437409653756005`
-- 🔵 Dropy Ryzen: `1524841513606189178`
-- Ping Paweł: `1265797244074852576`
-- Ping Ryzen: `1330652001075335300`
+- 🟢 Plaza Paweł: `1524784522154213397`
+- 🔵 Plaza Ryzen: `1524841567028903966`
 
-Wszystkie ID można zmienić przez Railway Variables.
+## Komendy dropów
+
+- `/drop` — zakres dat i godzin, typ, wariant, kanał i konto z listy,
+- `/today` — dzisiejsze dropy od 00:00,
+- `/pet` — historia dropów konkretnego peta,
+- `/petvalue` — historia RAP wyłącznie z PS99RAP,
+- `/webhookurl` — adres relay dla skryptu Roblox.
 
 ## Pozostałe funkcje
 
-- raport dzienny o `23:59` osobno dla Pawła i Ryzena,
-- aktualny RAP z PS99RAP z awaryjną ceną z kanału,
+- raport dropów o 23:59 osobno dla Pawła i Ryzena,
 - alerty dla Titanic, Gargantuan, Shiny Rainbow i RAP `4B ±100M`,
 - rekordy RAP,
-- przyciski następnej i poprzedniej strony,
-- relay webhooka Roblox, dzięki któremu drop wysyła bot DropVault.
+- aktualny RAP z PS99RAP z fallbackiem z webhooka/kanału,
+- przyciski poprzedniej i następnej strony,
+- webhook relay,
+- panele prywatnych serwerów Roblox z blokami łatwymi do kopiowania.
 
 ## Railway Variables
-
-Najważniejsze zmienne:
 
 ```env
 TOKEN=TOKEN_BOTA
@@ -70,15 +86,19 @@ PAWEL_DROP_CHANNEL_ID=1515437409653756005
 RYZEN_DROP_CHANNEL_ID=1524841513606189178
 PAWEL_REPORT_CHANNEL_ID=1515437409653756005
 RYZEN_REPORT_CHANNEL_ID=1524841513606189178
+
+PAWEL_PLAZA_CHANNEL_ID=1524784522154213397
+RYZEN_PLAZA_CHANNEL_ID=1524841567028903966
+PAWEL_PLAZA_REPORT_CHANNEL_ID=1524784522154213397
+RYZEN_PLAZA_REPORT_CHANNEL_ID=1524841567028903966
+
 PAWEL_ALERT_USER_ID=1265797244074852576
 RYZEN_ALERT_USER_ID=1330652001075335300
-
 PAWEL_INGEST_SECRET=DŁUGIE_LOSOWE_HASŁO
 RYZEN_INGEST_SECRET=INNE_DŁUGIE_LOSOWE_HASŁO
 
-ALERT_RAP_CENTER=4000000000
-ALERT_RAP_TOLERANCE=100000000
 PS99RAP_ENABLED=true
+PS99RAP_BASE_URL=https://ps99rap.com
 STATE_DIR=/app/data
 ```
 
@@ -90,11 +110,9 @@ Dodaj Volume z mount path:
 /app/data
 ```
 
-## Discord Developer Portal
+## Uprawnienia Discord
 
-Włącz `Message Content Intent`.
-
-Bot potrzebuje:
+Włącz `Message Content Intent`. Bot potrzebuje na kanałach dropów, Plaza, raportów i serwerów:
 
 - View Channel,
 - Read Message History,
@@ -102,17 +120,8 @@ Bot potrzebuje:
 - Embed Links,
 - Use Application Commands.
 
-## Wgranie aktualizacji
+## Aktualizacja
 
-Podmień wszystkie pliki projektu zawartością ZIP-a i wykonaj pełny `Redeploy`. Komendy serwerowe z `GUILD_ID` odświeżają się po uruchomieniu bota.
+Podmień cały projekt zawartością ZIP-a i wykonaj pełny `Redeploy`. Przy ustawionym `GUILD_ID` nowe komendy pojawiają się po ponownym uruchomieniu bota.
 
-## Panele prywatnych serwerów Roblox
-
-Po każdym uruchomieniu bot publikuje albo aktualizuje jeden embed z linkami:
-
-- Paweł: kanał `1525508811039969480` — 5 serwerów,
-- Ryzen: kanał `1525508845324075179` — 4 serwery.
-
-Każdy serwer ma przycisk **Serwer 1/2/...** oraz osobny blok kodu z ikoną kopiowania po prawej stronie, dzięki czemu cały link można skopiować jednym kliknięciem. Bot zapamiętuje ID wiadomości i edytuje istniejący panel zamiast wysyłać duplikat przy każdym restarcie.
-
-Bot potrzebuje na obu kanałach uprawnień: **View Channel**, **Send Messages**, **Embed Links** i **Read Message History**.
+PS99RAP jest źródłem aktualnego RAP; ceny API mogą być buforowane przez serwis.

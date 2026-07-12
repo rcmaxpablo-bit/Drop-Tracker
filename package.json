@@ -1,8 +1,8 @@
 {
   "name": "dropvault-bot",
-  "version": "2.7.1",
+  "version": "3.0.0",
   "private": true,
-  "description": "Discord bot do śledzenia dropów z wyborem kont Roblox, raportami, webhook relay i panelami serwerów z kopiowaniem linków.",
+  "description": "Discord bot do dropów i Trading Plaza z raportami, aktualnym RAP z PS99RAP, webhook relay i panelami serwerów.",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
