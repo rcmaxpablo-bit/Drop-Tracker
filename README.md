@@ -1,6 +1,27 @@
-# DropVault Bot 3.0 — Dropy + Trading Plaza
+# DropVault Bot 3.1 — Dropy + Trading Plaza + `/raport`
 
 Bot analizuje dropy Huge/Titanic/Gargantuan oraz zakupy z Booths Sniper na dwóch oddzielnych kanałach. Aktualne ceny pobiera z publicznego API PS99RAP.
+
+
+## Ręczna komenda `/raport` — v3.1.0
+
+Komenda otwiera okienko, w którym wybierasz:
+
+- raport dropów, raport Trading Plaza albo oba,
+- Pawła, Ryzena albo obie osoby,
+- konkretną datę w formacie `DD.MM.RRRR`.
+
+Bot wysyła gotowe embedy na właściwe kanały raportowe. Dzięki temu można ręcznie wygenerować brakujący raport po restarcie Railway albo sprawdzić dowolny wcześniejszy dzień. Komenda jest dostępna dla osób z uprawnieniem **Zarządzanie serwerem**.
+
+Ręczne wygenerowanie raportu nie wyłącza automatycznego raportu o 23:59, więc raport uruchomiony w ciągu dnia jest tylko bieżącym podsumowaniem.
+
+## Poprawka raportu Plaza Paweł — v3.0.1
+
+- raport Pawła jest zawsze wysyłany na `1524784522154213397`,
+- raporty Plaza działają w osobnym schedulerze i nie czekają na raporty dropów,
+- jeśli Railway ominie dokładnie 23:59, bot nadrabia raport po północy do 02:00,
+- bot sprawdza ostatnie wiadomości, aby po redeployu nie wysłać duplikatu raportu.
+
 
 ## Nowe komendy Trading Plaza
 
@@ -61,7 +82,8 @@ Domyślne kanały:
 - `/today` — dzisiejsze dropy od 00:00,
 - `/pet` — historia dropów konkretnego peta,
 - `/petvalue` — historia RAP wyłącznie z PS99RAP,
-- `/webhookurl` — adres relay dla skryptu Roblox.
+- `/webhookurl` — adres relay dla skryptu Roblox,
+- `/raport` — ręczne wysłanie raportu dropów i/lub Trading Plaza dla wybranej daty.
 
 ## Pozostałe funkcje
 
@@ -87,10 +109,9 @@ RYZEN_DROP_CHANNEL_ID=1524841513606189178
 PAWEL_REPORT_CHANNEL_ID=1515437409653756005
 RYZEN_REPORT_CHANNEL_ID=1524841513606189178
 
-PAWEL_PLAZA_CHANNEL_ID=1524784522154213397
-RYZEN_PLAZA_CHANNEL_ID=1524841567028903966
-PAWEL_PLAZA_REPORT_CHANNEL_ID=1524784522154213397
-RYZEN_PLAZA_REPORT_CHANNEL_ID=1524841567028903966
+# Kanały Plaza są wpisane bezpośrednio w index.js:
+# Paweł: 1524784522154213397
+# Ryzen: 1524841567028903966
 
 PAWEL_ALERT_USER_ID=1265797244074852576
 RYZEN_ALERT_USER_ID=1330652001075335300

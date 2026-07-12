@@ -123,24 +123,25 @@ const DROP_CHANNELS = [
 ];
 
 
+// Kanały Trading Plaza. Kanał Pawła jest ustawiony na sztywno, żeby stara lub
+// błędna zmienna Railway nie przekierowała raportu na inny kanał.
+const PAWEL_PLAZA_CHANNEL_ID = '1524784522154213397';
+const RYZEN_PLAZA_CHANNEL_ID = '1524841567028903966';
+
 const PLAZA_CHANNELS = [
   {
     key: 'pawel',
     label: 'Plaza Paweł',
-    id: process.env.PAWEL_PLAZA_CHANNEL_ID || '1524784522154213397',
-    reportChannelId: process.env.PAWEL_PLAZA_REPORT_CHANNEL_ID
-      || process.env.PAWEL_PLAZA_CHANNEL_ID
-      || '1524784522154213397',
+    id: PAWEL_PLAZA_CHANNEL_ID,
+    reportChannelId: PAWEL_PLAZA_CHANNEL_ID,
     emoji: '🟢',
     color: 0x57f287,
   },
   {
     key: 'ryzen',
     label: 'Plaza Ryzen',
-    id: process.env.RYZEN_PLAZA_CHANNEL_ID || '1524841567028903966',
-    reportChannelId: process.env.RYZEN_PLAZA_REPORT_CHANNEL_ID
-      || process.env.RYZEN_PLAZA_CHANNEL_ID
-      || '1524841567028903966',
+    id: RYZEN_PLAZA_CHANNEL_ID,
+    reportChannelId: RYZEN_PLAZA_CHANNEL_ID,
     emoji: '🔵',
     color: 0x5865f2,
   },
@@ -222,6 +223,11 @@ const commands = [
   new SlashCommandBuilder()
     .setName('plazatime')
     .setDescription('Sprawdza najlepsze godziny zakupów na Trading Plaza'),
+
+  new SlashCommandBuilder()
+    .setName('raport')
+    .setDescription('Ręcznie wysyła raport dropów lub Trading Plaza')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 ];
 
 // ============================================================
@@ -768,6 +774,44 @@ function buildPlazaTimeFormModal(userId) {
         'form_account',
         'np. ps99alts23',
         { required: false, maxLength: 100 },
+      ),
+    );
+}
+
+
+function buildReportFormModal(userId) {
+  const today = DateTime.now().setZone(TIME_ZONE).toFormat('dd.MM.yyyy');
+  const reportTypeOptions = [
+    { label: 'Raport dropów', value: 'drops', emoji: '🎁' },
+    { label: 'Raport Trading Plaza', value: 'plaza', emoji: '⛱️' },
+    { label: 'Dropy i Trading Plaza', value: 'both', emoji: '📊' },
+  ];
+  const ownerOptions = [
+    { label: 'Paweł', value: 'pawel', emoji: '🟢' },
+    { label: 'Ryzen', value: 'ryzen', emoji: '🔵' },
+    { label: 'Paweł i Ryzen', value: 'all', emoji: '👥' },
+  ];
+
+  return new ModalBuilder()
+    .setCustomId(`form:raport:${userId}`)
+    .setTitle('Wyślij raport')
+    .addLabelComponents(
+      makeSelectLabel(
+        'RODZAJ RAPORTU',
+        'Wybierz dropy, zakupy z Plazy albo oba raporty.',
+        makeStringSelect('form_report_type', 'Wybierz raport', reportTypeOptions, 'both'),
+      ),
+      makeSelectLabel(
+        'DLA KOGO?',
+        'Raport trafi na odpowiedni kanał Pawła lub Ryzena.',
+        makeStringSelect('form_owner', 'Wybierz osobę', ownerOptions, 'pawel'),
+      ),
+      makeTextLabel(
+        'DATA RAPORTU',
+        'Format: DD.MM.RRRR. Możesz wybrać dzisiaj albo wcześniejszy dzień.',
+        'form_report_date',
+        today,
+        { required: true, value: today, maxLength: 10 },
       ),
     );
 }
@@ -2610,7 +2654,9 @@ function buildDailyReportEmbeds(channelConfig, reportDate, drops, metadata) {
     .setFooter({
       text: metadata.hitLimit
         ? `Osiągnięto limit ${MAX_MESSAGES} wiadomości. • RAP: ps99rap.com`
-        : 'Automatyczny raport 23:59 • RAP: ps99rap.com',
+        : metadata.manual
+          ? 'Raport wygenerowany komendą /raport • RAP: ps99rap.com'
+          : 'Automatyczny raport 23:59 • RAP: ps99rap.com',
     })
     .setTimestamp();
 
@@ -2676,30 +2722,46 @@ async function sendDailyReport(channelConfig, reportDate) {
   console.log(`Wysłano raport dzienny: ${channelConfig.label} — ${reportDate.toISODate()}`);
 }
 
+function getScheduledReportDate(now) {
+  // Standardowo raport leci o 23:59 za bieżący dzień.
+  if (now.hour === 23 && now.minute === 59) return now;
+
+  // Awaryjne nadrobienie po północy. Dzięki temu raport nie przepada, gdy
+  // Railway zrobi restart albo proces nie wykona ticka dokładnie o 23:59.
+  if (now.hour >= 0 && now.hour < 2) return now.minus({ days: 1 });
+
+  return null;
+}
+
 async function dailyReportTick() {
   const now = DateTime.now().setZone(TIME_ZONE);
-  if (now.hour !== 23 || now.minute !== 59) return;
+  const reportDate = getScheduledReportDate(now);
+  if (!reportDate) return;
 
   for (const channelConfig of DROP_CHANNELS) {
-    if (state.dailyReports[channelConfig.key] === now.toISODate()) continue;
+    if (state.dailyReports[channelConfig.key] === reportDate.toISODate()) continue;
 
     try {
-      await sendDailyReport(channelConfig, now);
+      await sendDailyReport(channelConfig, reportDate);
     } catch (error) {
       console.error(`Błąd raportu dziennego ${channelConfig.label}:`, error);
     }
   }
-
-  await dailyPlazaReportTick(now);
 }
 
 function startScheduler() {
   if (schedulerStarted) return;
   schedulerStarted = true;
-  setInterval(() => {
-    dailyReportTick().catch((error) => console.error('Błąd schedulera raportów:', error));
-  }, 30_000);
-  dailyReportTick().catch(() => {});
+
+  const runSchedulers = () => {
+    dailyReportTick().catch((error) => console.error('Błąd schedulera dropów:', error));
+    dailyPlazaReportTick().catch((error) => console.error('Błąd schedulera Plaza:', error));
+  };
+
+  // Osobne wywołania sprawiają, że błąd lub długie skanowanie kanałów dropów
+  // nie blokuje raportu Trading Plaza.
+  setInterval(runSchedulers, 30_000);
+  runSchedulers();
 }
 
 
@@ -2803,7 +2865,9 @@ function buildDailyPlazaReportEmbeds(channelConfig, reportDate, purchases, metad
     .setFooter({
       text: metadata.hitLimit
         ? `Osiągnięto limit ${MAX_MESSAGES} wiadomości • RAP: ps99rap.com`
-        : 'Automatyczny raport Plaza 23:59 • RAP: ps99rap.com',
+        : metadata.manual
+          ? 'Raport Plaza wygenerowany komendą /raport • RAP: ps99rap.com'
+          : 'Automatyczny raport Plaza 23:59 • RAP: ps99rap.com',
     })
     .setTimestamp();
   if (bestPurchase?.thumbnail) summary.setThumbnail(bestPurchase.thumbnail);
@@ -2832,7 +2896,111 @@ function buildDailyPlazaReportEmbeds(channelConfig, reportDate, purchases, metad
   return embeds;
 }
 
+async function plazaReportAlreadyExists(targetChannel, channelConfig, reportDate) {
+  const wantedDate = reportDate.toFormat('dd.MM.yyyy');
+  const wantedTitle = `Trading Plaza — raport dnia — ${channelConfig.label}`;
+
+  try {
+    const recent = await targetChannel.messages.fetch({ limit: 100 });
+    return recent.some((message) => (
+      message.author?.id === client.user?.id
+      && message.embeds.some((embed) => (
+        String(embed.title || '').includes(wantedTitle)
+        && String(embed.description || '').includes(wantedDate)
+      ))
+    ));
+  } catch (error) {
+    console.warn(`Nie udało się sprawdzić duplikatu raportu ${channelConfig.label}:`, error.message);
+    return false;
+  }
+}
+
 async function sendDailyPlazaReport(channelConfig, reportDate) {
+  const targetChannel = await getTextChannel(channelConfig.reportChannelId);
+  const reportDateKey = reportDate.toISODate();
+
+  // Chroni przed podwójnym raportem także po redeployu bez trwałego volume.
+  if (await plazaReportAlreadyExists(targetChannel, channelConfig, reportDate)) {
+    state.dailyPlazaReports[channelConfig.key] = reportDateKey;
+    saveState();
+    console.log(`Raport Plaza już istnieje: ${channelConfig.label} — ${reportDateKey}`);
+    return;
+  }
+
+  const from = reportDate.startOf('day');
+  const to = reportDate.endOf('day');
+  const result = await fetchPlazaPurchasesFromChannels([channelConfig.id], from.toMillis(), to.toMillis());
+  const repriced = await repricePlazaPurchases(result.purchases);
+  const embeds = buildDailyPlazaReportEmbeds(channelConfig, reportDate, repriced.purchases, {
+    scanned: result.scanned,
+    hitLimit: result.hitLimit,
+    pricingFound: repriced.pricingFound,
+    pricingWanted: repriced.pricingWanted,
+  });
+
+  await sendEmbedsInBatches(targetChannel, embeds);
+  state.dailyPlazaReports[channelConfig.key] = reportDateKey;
+  saveState();
+  console.log(`Wysłano raport Plaza na kanał ${targetChannel.id}: ${channelConfig.label} — ${reportDateKey}`);
+}
+
+async function dailyPlazaReportTick() {
+  const now = DateTime.now().setZone(TIME_ZONE);
+  const reportDate = getScheduledReportDate(now);
+  if (!reportDate) return;
+
+  for (const channelConfig of PLAZA_CHANNELS) {
+    if (state.dailyPlazaReports[channelConfig.key] === reportDate.toISODate()) continue;
+    try {
+      await sendDailyPlazaReport(channelConfig, reportDate);
+    } catch (error) {
+      console.error(
+        `Błąd raportu Plaza ${channelConfig.label} (źródło ${channelConfig.id}, cel ${channelConfig.reportChannelId}):`,
+        error,
+      );
+    }
+  }
+}
+
+
+// ============================================================
+// RĘCZNA KOMENDA /RAPORT
+// ============================================================
+
+function parseManualReportDate(raw) {
+  const value = String(raw || '').trim();
+  const parsed = DateTime.fromFormat(value, 'dd.MM.yyyy', {
+    zone: TIME_ZONE,
+    locale: 'pl',
+  });
+  return parsed.isValid ? parsed.startOf('day') : null;
+}
+
+function selectedConfigs(configs, ownerKey) {
+  if (ownerKey === 'all') return configs;
+  return configs.filter((config) => config.key === ownerKey);
+}
+
+async function sendManualDropReport(channelConfig, reportDate) {
+  const from = reportDate.startOf('day');
+  const to = reportDate.endOf('day');
+  const result = await fetchDropsFromChannels([channelConfig.id], from.toMillis(), to.toMillis());
+  const repriced = await repriceDrops(result.drops, result.drops, [channelConfig.id]);
+  const targetChannel = await getTextChannel(channelConfig.reportChannelId);
+  const embeds = buildDailyReportEmbeds(channelConfig, reportDate, repriced.drops, {
+    scanned: result.scanned + repriced.scanned,
+    hitLimit: result.hitLimit || repriced.hitLimit,
+    pricingFromPs99Rap: repriced.pricingFromPs99Rap,
+    pricingWanted: repriced.pricingWanted,
+    pricingFallback: repriced.pricingFallback,
+    manual: true,
+  });
+
+  await sendEmbedsInBatches(targetChannel, embeds);
+  return targetChannel.id;
+}
+
+async function sendManualPlazaReport(channelConfig, reportDate) {
   const from = reportDate.startOf('day');
   const to = reportDate.endOf('day');
   const result = await fetchPlazaPurchasesFromChannels([channelConfig.id], from.toMillis(), to.toMillis());
@@ -2843,22 +3011,67 @@ async function sendDailyPlazaReport(channelConfig, reportDate) {
     hitLimit: result.hitLimit,
     pricingFound: repriced.pricingFound,
     pricingWanted: repriced.pricingWanted,
+    manual: true,
   });
+
   await sendEmbedsInBatches(targetChannel, embeds);
-  state.dailyPlazaReports[channelConfig.key] = reportDate.toISODate();
-  saveState();
-  console.log(`Wysłano raport Plaza: ${channelConfig.label} — ${reportDate.toISODate()}`);
+  return targetChannel.id;
 }
 
-async function dailyPlazaReportTick(now) {
-  for (const channelConfig of PLAZA_CHANNELS) {
-    if (state.dailyPlazaReports[channelConfig.key] === now.toISODate()) continue;
-    try {
-      await sendDailyPlazaReport(channelConfig, now);
-    } catch (error) {
-      console.error(`Błąd raportu Plaza ${channelConfig.label}:`, error);
+async function executeReportCommand(interaction, options) {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const reportDate = parseManualReportDate(options.dateRaw);
+  if (!reportDate) {
+    await interaction.editReply('❌ Nieprawidłowa data. Użyj formatu `DD.MM.RRRR`, np. `12.07.2026`.');
+    return;
+  }
+
+  const today = DateTime.now().setZone(TIME_ZONE).startOf('day');
+  if (reportDate.toMillis() > today.toMillis()) {
+    await interaction.editReply('❌ Nie można wygenerować raportu dla przyszłej daty.');
+    return;
+  }
+
+  const reportType = ['drops', 'plaza', 'both'].includes(options.reportType)
+    ? options.reportType
+    : 'both';
+  const ownerKey = ['pawel', 'ryzen', 'all'].includes(options.ownerKey)
+    ? options.ownerKey
+    : 'pawel';
+
+  const jobs = [];
+  if (reportType === 'drops' || reportType === 'both') {
+    for (const config of selectedConfigs(DROP_CHANNELS, ownerKey)) {
+      jobs.push({ kind: 'Dropy', config, run: () => sendManualDropReport(config, reportDate) });
     }
   }
+  if (reportType === 'plaza' || reportType === 'both') {
+    for (const config of selectedConfigs(PLAZA_CHANNELS, ownerKey)) {
+      jobs.push({ kind: 'Plaza', config, run: () => sendManualPlazaReport(config, reportDate) });
+    }
+  }
+
+  const sent = [];
+  const failed = [];
+  for (const job of jobs) {
+    try {
+      const channelId = await job.run();
+      sent.push(`${job.config.emoji} **${job.kind} — ${job.config.label}** → <#${channelId}>`);
+    } catch (error) {
+      console.error(`Błąd ręcznego raportu ${job.kind} ${job.config.label}:`, error);
+      failed.push(`${job.config.emoji} ${job.kind} — ${job.config.label}: ${error.message || 'nieznany błąd'}`);
+    }
+  }
+
+  const parts = [
+    `📅 **Data raportu:** ${reportDate.toFormat('dd.MM.yyyy')}`,
+  ];
+  if (sent.length) parts.push(`\n✅ **Wysłano:**\n${sent.join('\n')}`);
+  if (failed.length) parts.push(`\n❌ **Nie udało się:**\n${failed.join('\n')}`);
+  if (!sent.length && !failed.length) parts.push('\nBrak raportów do wysłania.');
+
+  await interaction.editReply(parts.join(''));
 }
 
 // ============================================================
@@ -4140,7 +4353,7 @@ client.once(Events.ClientReady, async (readyClient) => {
   startPs99RapCatalogRefresh();
   await warmCatalogAndRecords();
   alertsReady = true;
-  console.log('DropVault jest gotowy: formularze modalne, dropy, Trading Plaza, PS99RAP, raporty 23:59, panele serwerów, relay webhooków, alerty i rekordy aktywne.');
+  console.log('DropVault jest gotowy: formularze modalne, /raport, dropy, Trading Plaza, PS99RAP, niezależne raporty 23:59 z nadrobieniem po północy, panele serwerów, relay webhooków, alerty i rekordy aktywne.');
 });
 
 client.on(Events.MessageCreate, async (message) => {
@@ -4213,6 +4426,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
+    if (interaction.isChatInputCommand() && interaction.commandName === 'raport') {
+      await interaction.showModal(buildReportFormModal(interaction.user.id));
+      return;
+    }
+
     if (interaction.isModalSubmit() && interaction.customId.startsWith('form:')) {
       const [, formName, ownerId] = interaction.customId.split(':');
       if (interaction.user.id !== ownerId) {
@@ -4220,6 +4438,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
 
+
+      if (formName === 'raport') {
+        await executeReportCommand(interaction, {
+          reportType: getModalSelect(interaction, 'form_report_type', 'both'),
+          ownerKey: getModalSelect(interaction, 'form_owner', 'pawel'),
+          dateRaw: interaction.fields.getTextInputValue('form_report_date'),
+        });
+        return;
+      }
 
       if (formName === 'bestbuys') {
         await executeBestBuysCommand(interaction, {
