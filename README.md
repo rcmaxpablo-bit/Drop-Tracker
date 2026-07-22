@@ -1,6 +1,16 @@
-# DropVault Bot 3.1 — Dropy + Trading Plaza + `/raport`
+# DropVault Bot 3.2 — Dropy + licznik Hatch Tracker + Trading Plaza
 
 Bot analizuje dropy Huge/Titanic/Gargantuan oraz zakupy z Booths Sniper na dwóch oddzielnych kanałach. Aktualne ceny pobiera z publicznego API PS99RAP.
+
+## Licznik wiadomości Hatch Tracker — v3.2.0
+
+- bot rozpoznaje embedy z polami `Pet`, `Player` i `Eggs Hatched`,
+- każda poprawna wiadomość z hatchem zwiększa licznik danego kanału o 1,
+- wartość `Eggs Hatched` w wiadomości wysłanej przez relay jest zastępowana aktualną liczbą wiadomości,
+- po restarcie bot skanuje starsze wiadomości i odbudowuje licznik,
+- standardowy format `Item` / `In Account` / `RAP` nadal działa.
+
+Licznik jest prowadzony osobno dla kanału Pawła i osobno dla kanału Ryzena. Aby bot mógł podmienić `0.0` w embedzie, skrypt Roblox musi wysyłać webhook na adres zwrócony przez `/webhookurl`, a nie bezpośrednio na webhook Discorda.
 
 
 ## Ręczna komenda `/raport` — v3.1.0
@@ -92,7 +102,7 @@ Domyślne kanały:
 - rekordy RAP,
 - aktualny RAP z PS99RAP z fallbackiem z webhooka/kanału,
 - przyciski poprzedniej i następnej strony,
-- webhook relay,
+- webhook relay z licznikiem wiadomości Hatch Tracker,
 - panele prywatnych serwerów Roblox z blokami łatwymi do kopiowania.
 
 ## Railway Variables

@@ -16,8 +16,10 @@ DROPVAULT — WEBHOOK RELAY
    gdzie normalnie wpisujesz Discord webhook URL.
 
 Skrypt musi wysyłać standardowy JSON webhooka Discord z tablicą "embeds".
-Bot odczyta Item i In Account, pobierze aktualny RAP, a następnie wyśle
-wiadomość jako bot na odpowiednim kanale.
+Bot obsługuje format Item / In Account oraz format Hatch Tracker
+Pet / Player / Eggs Hatched. Pobierze aktualny RAP, policzy poprawne
+wiadomości na danym kanale i wyśle embed jako bot. Wartość Eggs Hatched
+zostanie zastąpiona liczbą wiadomości (1, 2, 3, ...).
 
 WAŻNE:
 - nie wklejaj TOKENU bota do skryptu Roblox,
@@ -25,3 +27,8 @@ WAŻNE:
 - po wycieku zmień odpowiedni *_INGEST_SECRET i zrób Redeploy,
 - jeżeli dany skrypt akceptuje wyłącznie domenę discord.com, trzeba zmienić
   w nim walidację URL; sam relay nie może tego obejść.
+
+LICZNIK:
+- Paweł i Ryzen mają osobne liczniki,
+- po restarcie bot przelicza starsze poprawne wiadomości z kanału,
+- podmiana pola Eggs Hatched działa tylko przez relay DropVault.

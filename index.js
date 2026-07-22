@@ -64,6 +64,12 @@ const RELAY_DUPLICATE_WINDOW_MS = Math.max(
   5_000,
   Number(process.env.RELAY_DUPLICATE_WINDOW_MS || 30_000),
 );
+// Identyczne hatche mogą legalnie pojawić się jeden po drugim, dlatego dla
+// formatu Hatch Tracker blokujemy tylko niemal jednoczesne ponowienie requestu.
+const HATCH_RELAY_DUPLICATE_WINDOW_MS = Math.max(
+  0,
+  Number(process.env.HATCH_RELAY_DUPLICATE_WINDOW_MS || 1_000),
+);
 const PUBLIC_BASE_URL_RAW = String(
   process.env.PUBLIC_BASE_URL
   || (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : ''),
@@ -250,16 +256,22 @@ let ps99RapCatalogLoading = null;
 let ps99RapCatalogTimer = null;
 let alertsReady = false;
 let schedulerStarted = false;
+const dropCounterReadyChannels = new Set();
+const dropCounterInitializationPromises = new Map();
 
 let state = {
   dailyReports: {},
   dailyPlazaReports: {},
   records: {},
   processedMessageIds: [],
+  countedDropMessageIds: [],
   serverPanelMessages: {},
+  dropMessageCounts: {},
 };
 
 const processedMessageIds = new Set();
+const countedDropMessageIds = new Set();
+const relayChannelQueues = new Map();
 
 function createSessionId() {
   return crypto.randomBytes(6).toString('hex');
@@ -297,7 +309,11 @@ function loadState() {
         processedMessageIds: Array.isArray(parsed.processedMessageIds)
           ? parsed.processedMessageIds.slice(-5000)
           : [],
+        countedDropMessageIds: Array.isArray(parsed.countedDropMessageIds)
+          ? parsed.countedDropMessageIds.slice(-50000)
+          : [],
         serverPanelMessages: parsed.serverPanelMessages || {},
+        dropMessageCounts: parsed.dropMessageCounts || {},
       };
     }
   } catch (error) {
@@ -305,11 +321,13 @@ function loadState() {
   }
 
   for (const id of state.processedMessageIds) processedMessageIds.add(id);
+  for (const id of state.countedDropMessageIds) countedDropMessageIds.add(id);
 }
 
 function saveState() {
   ensureStateDirectory();
   state.processedMessageIds = [...processedMessageIds].slice(-5000);
+  state.countedDropMessageIds = [...countedDropMessageIds].slice(-50000);
 
   const temporaryFile = `${STATE_FILE}.tmp`;
   try {
@@ -318,6 +336,108 @@ function saveState() {
   } catch (error) {
     console.error('Nie udało się zapisać pliku stanu:', error);
   }
+}
+
+
+function trimOldestSetEntries(set, maxSize) {
+  while (set.size > maxSize) {
+    const first = set.values().next().value;
+    set.delete(first);
+  }
+}
+
+function getDropMessageCount(channelId) {
+  if (!state.dropMessageCounts || typeof state.dropMessageCounts !== 'object') {
+    state.dropMessageCounts = {};
+  }
+
+  const value = Number(state.dropMessageCounts[channelId] || 0);
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+function setDropMessageCount(channelId, count) {
+  if (!state.dropMessageCounts || typeof state.dropMessageCounts !== 'object') {
+    state.dropMessageCounts = {};
+  }
+
+  const safeCount = Math.max(0, Math.trunc(Number(count) || 0));
+  state.dropMessageCounts[channelId] = safeCount;
+  return safeCount;
+}
+
+function markDropMessageCounted(messageId) {
+  if (!messageId) return;
+  countedDropMessageIds.add(messageId);
+  trimOldestSetEntries(countedDropMessageIds, 50000);
+}
+
+function countDropMessageOnce(channelId, messageId) {
+  if (messageId && countedDropMessageIds.has(messageId)) {
+    return getDropMessageCount(channelId);
+  }
+
+  markDropMessageCounted(messageId);
+  return setDropMessageCount(channelId, getDropMessageCount(channelId) + 1);
+}
+
+function rebuildDropMessageCount(channelId, drops) {
+  const uniqueMessageIds = new Set(
+    drops
+      .map((drop) => drop?.messageId)
+      .filter(Boolean),
+  );
+
+  for (const messageId of uniqueMessageIds) markDropMessageCounted(messageId);
+  dropCounterReadyChannels.add(channelId);
+  return setDropMessageCount(channelId, uniqueMessageIds.size);
+}
+
+function withRelayChannelQueue(channelId, task) {
+  const previous = relayChannelQueues.get(channelId) || Promise.resolve();
+  const current = previous
+    .catch(() => {})
+    .then(task);
+
+  relayChannelQueues.set(channelId, current);
+  current.finally(() => {
+    if (relayChannelQueues.get(channelId) === current) relayChannelQueues.delete(channelId);
+  }).catch(() => {});
+
+  return current;
+}
+
+async function ensureDropMessageCounter(channelConfig) {
+  if (dropCounterReadyChannels.has(channelConfig.id)) return;
+
+  const existing = dropCounterInitializationPromises.get(channelConfig.id);
+  if (existing) {
+    await existing;
+    return;
+  }
+
+  const initialization = (async () => {
+    try {
+      const channel = await getTextChannel(channelConfig.id);
+      const from = DateTime.fromISO('2015-01-01', { zone: TIME_ZONE }).startOf('day').toMillis();
+      const to = DateTime.now().setZone(TIME_ZONE).endOf('day').toMillis();
+      const result = await fetchDrops(channel, from, to);
+      rebuildDropMessageCount(channelConfig.id, result.drops);
+      saveState();
+      console.log(
+        `Licznik ${channelConfig.label}: ${getDropMessageCount(channelConfig.id)} wiadomości z dropem.`,
+      );
+    } catch (error) {
+      // Nie blokujemy webhooka, gdy Discord chwilowo nie pozwoli przeskanować historii.
+      // Wtedy kontynuujemy od ostatniej wartości zapisanej w Volume.
+      dropCounterReadyChannels.add(channelConfig.id);
+      console.error(`Nie udało się odbudować licznika ${channelConfig.label}:`, error);
+    } finally {
+      dropCounterInitializationPromises.delete(channelConfig.id);
+    }
+  })();
+
+  dropCounterInitializationPromises.set(channelConfig.id, initialization);
+  await initialization;
 }
 
 function getCatalog(channelId) {
@@ -1382,6 +1502,51 @@ function extractLabeledValue(text, label) {
   return colon >= 0 ? clean.slice(colon + 1).trim() : clean;
 }
 
+function normalizeEmbedFieldName(value) {
+  return String(value || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function cleanEmbedFieldValue(value) {
+  const text = String(value || '').trim();
+  const codeValue = text.match(/^`([^`]+)`$/);
+  if (codeValue) return codeValue[1].trim();
+
+  return text
+    .replace(/\*\*/g, '')
+    .replace(/\|\|/g, '')
+    .replace(/^>\s*/gm, '')
+    .trim();
+}
+
+function extractEmbedFieldValue(embed, labels) {
+  const wantedLabels = labels.map(normalizeEmbedFieldName);
+
+  for (const field of embed?.fields || []) {
+    const fieldName = normalizeEmbedFieldName(field?.name);
+    if (!wantedLabels.some((label) => fieldName === label || fieldName.endsWith(` ${label}`))) {
+      continue;
+    }
+
+    const value = cleanEmbedFieldValue(field?.value);
+    if (value) return value;
+  }
+
+  return null;
+}
+
+function isEggsHatchedField(fieldName) {
+  const normalized = normalizeEmbedFieldName(fieldName);
+  return normalized === 'eggs hatched'
+    || normalized.endsWith(' eggs hatched')
+    || normalized === 'messages'
+    || normalized.endsWith(' messages');
+}
+
 function parseRap(value) {
   const digits = String(value || '').replace(/[^0-9]/g, '');
   return digits ? BigInt(digits) : 0n;
@@ -1395,9 +1560,19 @@ function parseDropFromEmbed(embed, message) {
   const petType = detectPetType(embed.title) || detectPetType(fullText);
   if (!petType) return null;
 
-  const item = extractLabeledValue(fullText, 'Item');
-  const account = extractLabeledValue(fullText, 'In Account');
-  const rapRaw = extractLabeledValue(fullText, 'RAP');
+  // Obsługa obu formatów:
+  // 1) DropVault: "Item" / "In Account" / "RAP"
+  // 2) Hatch Tracker: osobne pola "Pet" / "Player" / "Eggs Hatched"
+  const itemFromHatchTracker = extractEmbedFieldValue(embed, ['Pet']);
+  const accountFromHatchTracker = extractEmbedFieldValue(embed, ['Player']);
+  const item = extractEmbedFieldValue(embed, ['Item'])
+    || extractLabeledValue(fullText, 'Item')
+    || itemFromHatchTracker;
+  const account = extractEmbedFieldValue(embed, ['In Account'])
+    || extractLabeledValue(fullText, 'In Account')
+    || accountFromHatchTracker;
+  const rapRaw = extractEmbedFieldValue(embed, ['RAP', 'Current RAP', 'Aktualny RAP'])
+    || extractLabeledValue(fullText, 'RAP');
   if (!item || !account) return null;
 
   return {
@@ -1410,6 +1585,7 @@ function parseDropFromEmbed(embed, message) {
     rap: parseRap(rapRaw),
     thumbnail: embed.thumbnail?.url || null,
     channelId: message.channelId,
+    sourceFormat: itemFromHatchTracker && accountFromHatchTracker ? 'hatch_tracker' : 'dropvault',
   };
 }
 
@@ -3263,6 +3439,7 @@ async function warmCatalogAndRecords() {
     try {
       const result = await fetchDropsFromChannels([channelConfig.id], from, to);
       const repriced = await repriceDrops(result.drops, result.drops, [channelConfig.id]);
+      rebuildDropMessageCount(channelConfig.id, result.drops);
       if (!state.records[channelConfig.key]) state.records[channelConfig.key] = defaultRecordState();
       const chronological = [...repriced.drops].sort((a, b) => a.createdAt - b.createdAt);
       for (const drop of chronological) updateRecords(channelConfig.key, drop, false);
@@ -4128,7 +4305,7 @@ async function getCurrentRapForRelay(drop) {
   };
 }
 
-function buildRelayedDropEmbed(rawEmbed, drop, currentPrice, channelConfig) {
+function buildRelayedDropEmbed(rawEmbed, drop, currentPrice, channelConfig, messageCount) {
   const currentRap = currentPrice?.rap > 0n ? currentPrice.rap : drop.rap;
   const builder = new EmbedBuilder()
     .setColor(Number.isInteger(rawEmbed?.color) ? rawEmbed.color : channelConfig.color)
@@ -4140,12 +4317,23 @@ function buildRelayedDropEmbed(rawEmbed, drop, currentPrice, channelConfig) {
   }
 
   let rapWasPresent = /\bRAP\s*:/i.test(String(rawEmbed?.description || ''));
+  let hatchCounterWasPresent = false;
   const fields = Array.isArray(rawEmbed?.fields)
     ? rawEmbed.fields.slice(0, 25).map((field) => {
       const originalValue = String(field?.value || '');
       if (/\bRAP\s*:/i.test(originalValue) || /\bRAP\b/i.test(String(field?.name || ''))) {
         rapWasPresent = true;
       }
+
+      if (drop.sourceFormat === 'hatch_tracker' && isEggsHatchedField(field?.name)) {
+        hatchCounterWasPresent = true;
+        return {
+          name: clampText(field?.name, 256),
+          value: `\`${formatBigInt(BigInt(messageCount || 0))}\``,
+          inline: Boolean(field?.inline),
+        };
+      }
+
       return {
         name: clampText(field?.name, 256),
         value: clampText(replaceRapInWebhookText(originalValue, currentRap), 1024),
@@ -4153,6 +4341,14 @@ function buildRelayedDropEmbed(rawEmbed, drop, currentPrice, channelConfig) {
       };
     })
     : [];
+
+  if (drop.sourceFormat === 'hatch_tracker' && !hatchCounterWasPresent && fields.length < 25) {
+    fields.push({
+      name: '🥚 Eggs Hatched',
+      value: `\`${formatBigInt(BigInt(messageCount || 0))}\``,
+      inline: true,
+    });
+  }
 
   if (!rapWasPresent && fields.length < 25) {
     fields.push({ name: '💎 Aktualny RAP', value: `\`${formatBigInt(currentRap)}\``, inline: true });
@@ -4189,33 +4385,57 @@ async function processRelayPayload(channelConfig, payload, rawBody) {
       break;
     }
   }
-  if (!drop || !rawEmbed) throw Object.assign(new Error('Nie znaleziono Item / In Account w embedzie.'), { statusCode: 422 });
+  if (!drop || !rawEmbed) {
+    throw Object.assign(
+      new Error('Nie znaleziono pól Item / In Account ani Pet / Player w embedzie.'),
+      { statusCode: 422 },
+    );
+  }
 
   const hash = crypto
     .createHash('sha256')
     .update(`${channelConfig.key}:${rawBody}`)
     .digest('hex');
   const previous = relayRecentPayloads.get(hash);
-  if (previous && Date.now() - previous < RELAY_DUPLICATE_WINDOW_MS) {
+  const duplicateWindow = drop.sourceFormat === 'hatch_tracker'
+    ? HATCH_RELAY_DUPLICATE_WINDOW_MS
+    : RELAY_DUPLICATE_WINDOW_MS;
+  if (duplicateWindow > 0 && previous && Date.now() - previous < duplicateWindow) {
     return { duplicate: true, item: drop.item };
   }
   relayRecentPayloads.set(hash, Date.now());
 
-  const currentPrice = await getCurrentRapForRelay(drop);
-  const embed = buildRelayedDropEmbed(rawEmbed, drop, currentPrice, channelConfig);
-  const channel = await getTextChannel(channelConfig.id);
-  const sent = await channel.send({
-    content: '',
-    embeds: [embed],
-    allowedMentions: { parse: [] },
-  });
+  await ensureDropMessageCounter(channelConfig);
 
-  return {
-    duplicate: false,
-    item: drop.item,
-    rap: currentPrice?.rap > 0n ? currentPrice.rap : drop.rap,
-    messageId: sent.id,
-  };
+  return withRelayChannelQueue(channelConfig.id, async () => {
+    const currentPrice = await getCurrentRapForRelay(drop);
+    const messageCount = getDropMessageCount(channelConfig.id) + 1;
+    const embed = buildRelayedDropEmbed(
+      rawEmbed,
+      drop,
+      currentPrice,
+      channelConfig,
+      messageCount,
+    );
+    const channel = await getTextChannel(channelConfig.id);
+    const sent = await channel.send({
+      content: '',
+      embeds: [embed],
+      allowedMentions: { parse: [] },
+    });
+
+    setDropMessageCount(channelConfig.id, messageCount);
+    markDropMessageCounted(sent.id);
+    saveState();
+
+    return {
+      duplicate: false,
+      item: drop.item,
+      rap: currentPrice?.rap > 0n ? currentPrice.rap : drop.rap,
+      messageId: sent.id,
+      messageCount,
+    };
+  });
 }
 
 function sendJson(res, statusCode, body) {
@@ -4397,23 +4617,33 @@ client.once(Events.ClientReady, async (readyClient) => {
   startPs99RapCatalogRefresh();
   await warmCatalogAndRecords();
   alertsReady = true;
-  console.log('DropVault jest gotowy: formularze modalne, /raport, dropy, Trading Plaza, PS99RAP, niezależne raporty 23:59 z nadrobieniem po północy, panele serwerów, relay webhooków, alerty i rekordy aktywne.');
+  console.log('DropVault jest gotowy: formularze modalne, /raport, dropy, licznik wiadomości Hatch Tracker, Trading Plaza, PS99RAP, niezależne raporty 23:59 z nadrobieniem po północy, panele serwerów, relay webhooków, alerty i rekordy aktywne.');
 });
 
 client.on(Events.MessageCreate, async (message) => {
   try {
-    if (!getChannelConfigById(message.channelId)) return;
+    const channelConfig = getChannelConfigById(message.channelId);
+    if (!channelConfig) return;
     if (processedMessageIds.has(message.id)) return;
 
     processedMessageIds.add(message.id);
-    if (processedMessageIds.size > 5000) {
-      const first = processedMessageIds.values().next().value;
-      processedMessageIds.delete(first);
-    }
+    trimOldestSetEntries(processedMessageIds, 5000);
 
+    const parsedDrops = [];
     for (const embed of message.embeds) {
       const drop = parseDropFromEmbed(embed, message);
-      if (drop) await processNewDrop(drop);
+      if (drop) parsedDrops.push(drop);
+    }
+
+    if (parsedDrops.length > 0) {
+      // Relay rezerwuje numer przed wysłaniem embeda, dlatego własnej wiadomości
+      // bota nie zwiększamy drugi raz. Zewnętrzne webhooki liczymy dokładnie raz.
+      if (message.author?.id !== client.user?.id) {
+        await ensureDropMessageCounter(channelConfig);
+        countDropMessageOnce(message.channelId, message.id);
+      }
+
+      for (const drop of parsedDrops) await processNewDrop(drop);
     }
 
     saveState();
